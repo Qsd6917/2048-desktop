@@ -69,12 +69,13 @@ body {
  * 竖直方向的尺寸分配：
  *   1. 宽度同时受「视口宽」和「视口高」约束 —— 棋盘是正方形，宽高必须一起让，
  *      否则高窗口里棋盘永远只有 452px、下面留一大截空白（问题 5）。
- *      减掉的 330px 是标题、HUD、控制条、设置面板与页脚的固定开销。
+ *      减掉的 396px 是标题、HUD、每日条、两排控制条、设置面板与页脚的固定开销
+ *      （比原来多 66px，正好是每日条与第二排按钮占掉的高度）。
  *   2. margin-block: auto 让整块内容在多余空间里居中；空间不够时 auto 自动归零，
  *      内容从顶部开始排、页面正常滚动，不会被"居中"裁掉上边缘。
  */
 .app {
-  width: min(100%, 500px, max(280px, calc(100dvh - 330px)));
+  width: min(100%, 500px, max(280px, calc(100dvh - 396px)));
   margin-block: auto;
   display: flex;
   flex-direction: column;
@@ -401,6 +402,62 @@ body {
   }
 }
 
+/* ---------- 每日挑战条 ---------- */
+
+/*
+ * 一行三段：日期 / 战绩说明 / 开始按钮。
+ * 和设置面板同一套纸感（半透明底 + 细边），高度压到 34px，
+ * 因为它是常驻信息条，不能比 HUD 更抢眼。
+ */
+.daily-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin-bottom: 9px;
+  padding: 0 10px;
+  background: rgba(94, 76, 58, 0.055);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.daily-bar[hidden] {
+  display: none;
+}
+
+.daily-bar__date {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #5f5142;
+  font-variant-numeric: tabular-nums;
+}
+
+.daily-bar__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* 胶囊按钮在信息条里给一层白底，明确「可以点」，但高度仍压在小尺寸 */
+.daily-bar .btn--chip {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  background: #fffdf8;
+  color: #55483b;
+  box-shadow: 0 1px 2px rgba(116, 97, 79, 0.16);
+}
+
+.daily-bar .btn--chip:hover:not(:disabled) {
+  background: #fffdf8;
+  color: #55483b;
+}
+
 /* ---------- 控制条 ---------- */
 
 /*
@@ -412,6 +469,11 @@ body {
   grid-template-columns: 1.15fr 0.92fr 0.86fr 1.28fr 0.84fr;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+/* 第二排：每日挑战 / 复盘 / 成就，三列等宽，视觉权重低于第一排 */
+.controls--sub {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 /* ---------- 设置面板 ---------- */
