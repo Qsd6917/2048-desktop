@@ -75,6 +75,7 @@ group('结构', () => {
   ok('emptyLog 是函数', typeof Review.emptyLog === 'function');
   ok('appendMove 是函数', typeof Review.appendMove === 'function');
   ok('normalizeLog 是函数', typeof Review.normalizeLog === 'function');
+  ok('pickLog 是函数', typeof Review.pickLog === 'function');
   ok('summarize 是函数', typeof Review.summarize === 'function');
   ok('analyze 是函数', typeof Review.analyze === 'function');
   ok('TILE_COLORS 带经典色板', Review.TILE_COLORS['2'].background === '#eee4da' &&
@@ -136,6 +137,25 @@ group('appendMove 容错', () => {
   eq('非法数值折成 0 / null', [next.moves[0].g, next.moves[0].s, next.moves[0].t], [0, null, 3]);
   eq('非法 values 折成空数组', next.moves[0].v, []);
   eq('缺日志时日期为空串', next.date, '');
+});
+
+group('pickLog 选日志的优先级', () => {
+  const liveLog = Review.appendMove(Review.emptyLog('20261107'), entry('left', 10, 9, 'up'));
+  const stored = {
+    version: 1,
+    date: '20261107',
+    moves: liveLog.moves.slice(),
+    summary: { grade: 'B' },
+    meta: { score: 1234 }
+  };
+
+  eq('有步数的 live 优先', Review.pickLog(liveLog, stored), liveLog);
+  eq('空 live 不遮蔽已落盘的复盘', Review.pickLog(Review.emptyLog('20261107'), stored), stored);
+  eq('两份都空时返回 null（空状态）',
+    Review.pickLog(Review.emptyLog('20261107'), Review.emptyLog('20261107')), null);
+  eq('live 结构不合法时回落落盘', Review.pickLog({ date: '20261107' }, stored), stored);
+  eq('落盘结构不合法时返回 null', Review.pickLog(null, { moves: 'x' }), null);
+  ok('落盘没有步数也不展示', Review.pickLog(null, { moves: [] }) === null);
 });
 
 group('normalizeLog 洗存档数据', () => {

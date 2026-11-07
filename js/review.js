@@ -199,6 +199,25 @@
   }
 
   /**
+   * 选今天要展示的复盘日志。
+   *
+   * 「有步数」优先：进行中的日志如果还是空壳（刚点每日挑战 / 已结算后重开），
+   * 不能把已落盘的今日复盘遮蔽掉；两份都有步数时以进行中的那份为准。
+   * 两份都没有步数时返回 null，由调用方显示空状态。
+   *
+   * @param {*} live 内存里的进行中日志
+   * @param {*} stored 落盘的今日复盘
+   * @returns {object|null} 选中的日志
+   */
+  function pickLog(live, stored) {
+    if (live && Array.isArray(live.moves) && live.moves.length) return live;
+    if (stored && typeof stored === 'object' && Array.isArray(stored.moves) && stored.moves.length) {
+      return stored;
+    }
+    return null;
+  }
+
+  /**
    * 汇总一局：一致率、平均亏损、最差几步。
    *
    * 只统计「已评分」的步（b/s/t 齐全）；没有任何样本时 scored=0、两项指标记 0、
@@ -436,6 +455,7 @@
     emptyLog: emptyLog,
     appendMove: appendMove,
     normalizeLog: normalizeLog,
+    pickLog: pickLog,
     summarize: summarize,
     analyze: analyze
   };

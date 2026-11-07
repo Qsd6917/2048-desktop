@@ -436,17 +436,24 @@
     state.reviewLog = log;
 
     for (var i = 0; i < log.moves.length; i++) {
-      if (log.moves[i].b === null) evalQueue.push({ entry: log.moves[i], index: i });
+      if (log.moves[i].b === null) evalQueue.push({ entry: log.moves[i] });
     }
     while (evalQueue.length > EVAL_QUEUE_LIMIT) evalQueue.shift();
     scheduleEval();
   }
 
-  /** 撤销后丢掉被裁掉那些步的待办评分（下标 >= keep 的一律作废） */
-  function trimEvalQueue(keep) {
+  /**
+   * 撤销后丢掉已经被裁掉的待办评分。
+   *
+   * 按对象身份判断（entry 是否还在日志里），不用入队下标：
+   * 日志满 240 步后下标与绝对步号不再一一对应，按下标过滤会错杀仍然存在的待办。
+   */
+  function trimEvalQueue() {
+    var moves = state.reviewLog ? state.reviewLog.moves : [];
     var kept = [];
+
     for (var i = 0; i < evalQueue.length; i++) {
-      if (evalQueue[i].index < keep) kept.push(evalQueue[i]);
+      if (moves.indexOf(evalQueue[i].entry) >= 0) kept.push(evalQueue[i]);
     }
 
     evalQueue.length = 0;
@@ -469,7 +476,7 @@
 
     clearEvalTimer();
     if (length > keep) state.reviewLog.moves.length = keep;
-    trimEvalQueue(keep);
+    trimEvalQueue();
     if (evalQueue.length) scheduleEval();
   }
 
@@ -490,9 +497,7 @@
     });
 
     evalQueue.push({
-      entry: state.reviewLog.moves[state.reviewLog.moves.length - 1],
-      // 队列下标与日志下标一致，撤销裁剪时按它判断哪些待办已经作废
-      index: state.reviewLog.moves.length - 1
+      entry: state.reviewLog.moves[state.reviewLog.moves.length - 1]
     });
     while (evalQueue.length > EVAL_QUEUE_LIMIT) evalQueue.shift();
     scheduleEval();
@@ -618,8 +623,8 @@
     return '<div class="blunder">' +
       '<div class="mini-grid" aria-hidden="true">' + cells.join('') + '</div>' +
       '<div class="blunder__text">' +
-        '<p class="blunder__title">第 ' + item.index + ' 步 ' + escapeHtml(dirLabel) + '</p>' +
-        '<p class="blunder__sub">AI 建议 ' + escapeHtml(bestLabel) +
+        '<p class="blunder__title">第 ' + item.index + ' 步 向' + escapeHtml(dirLabel) + '</p>' +
+        '<p class="blunder__sub">AI 建议 向' + escapeHtml(bestLabel) +
           ' · 亏 ' + item.delta.toFixed(1) + '</p>' +
       '</div>' +
     '</div>';
@@ -684,25 +689,27 @@
     }
   }
 
-  /** 取今天该显示的复盘：内存里的进行中日志优先，其次落盘的那份 */
+  /** 取今天该显示的复盘：有步数的进行中日志优先，空日志不遮蔽落盘的那份 */
   function renderReviewSheet() {
     if (!els.reviewBody) return;
 
     var key = todayKey();
     var live = state.reviewLog && state.reviewLog.date === key ? state.reviewLog : null;
     var stored = Storage.get(Storage.KEYS.review + '.' + key, null);
-    var log = live || (stored && typeof stored === 'object' ? stored : null);
+    // 「有步数的优先」：完成今日挑战后再点每日挑战，空壳 live 不能盖掉已落盘的复盘
+    var log = Review.pickLog(live, stored);
+    var liveLog = log && log === live ? live : null;
 
-    var store = loadDailyStore();
-    var record = Daily.bestOf(store, key);
-    var meta = reviewMetaOf(live, stored, record);
-
-    if (!log || !Array.isArray(log.moves) || !log.moves.length) {
+    if (!log) {
       renderReviewEmpty();
       return;
     }
 
-    var summary = log.summary && !live ? log.summary : Review.summarize(log, meta);
+    var store = loadDailyStore();
+    var record = Daily.bestOf(store, key);
+    // meta 与 summary 必须跟同一份日志走：显示落盘日志时用落盘的本局指标
+    var meta = reviewMetaOf(liveLog, stored, record);
+    var summary = log.summary && !liveLog ? log.summary : Review.summarize(log, meta);
 
     // 近 7 日按「不含今天」算：recent 取 8 天，丢掉末位今天
     var history = [];
@@ -728,6 +735,7 @@
   function openReview() {
     if (!els.reviewSheet) return;
 
+    stopCountdown();   // 限时局看复盘不计时：抽屉开着时不能被判超时
     reviewReturnFocus = document.activeElement;
     renderReviewSheet();
     els.reviewSheet.hidden = false;
@@ -740,6 +748,8 @@
 
     els.reviewSheet.hidden = true;
     document.body.classList.remove('is-sheet-open');
+    // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
+    startCountdown();
 
     var target = reviewReturnFocus;
     reviewReturnFocus = null;
