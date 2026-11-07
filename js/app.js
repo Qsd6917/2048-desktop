@@ -1344,13 +1344,39 @@
 
   /* ---------- 渲染 ---------- */
 
+  /** 背景档位的阈值：2 起步，64 / 512 / 2048 / 4096+ 各进一档 */
+  var STAGE_STEPS = [64, 512, 2048, 4096];
+  /** 最近一次写入的档位：档位没变就不碰 documentElement 的样式 */
+  var stageLevel = -1;
+
+  /**
+   * 背景随最大方块渐变：只把档位写进 --stage-tint / --stage-glow，
+   * 具体色值全在 styles.css 里由纸张与木色派生。
+   *
+   * @param {number} maxTile 当前棋盘的最大方块
+   */
+  function renderStage(maxTile) {
+    var level = 0;
+    for (var i = 0; i < STAGE_STEPS.length; i++) {
+      if (maxTile >= STAGE_STEPS[i]) level = i + 1;
+    }
+    if (level === stageLevel) return;
+    stageLevel = level;
+
+    var root = document.documentElement;
+    root.style.setProperty('--stage-tint', 'var(--stage-tint-' + level + ')');
+    root.style.setProperty('--stage-glow', 'var(--stage-glow-' + level + ')');
+  }
+
   function renderHud() {
+    var maxTile = G.maxValue(state.board);
     els.score.textContent = String(state.score);
     els.best.textContent = String(Math.max(stats.bestScore, state.score));
     els.goal.textContent = String(goalValue());
-    els.maxTile.textContent = String(G.maxValue(state.board));
+    els.maxTile.textContent = String(maxTile);
     els.undo.disabled = state.history.length === 0;
     els.board.setAttribute('aria-label', settings.size + '×' + settings.size + ' 棋盘');
+    renderStage(maxTile);
     renderTimer();
   }
 

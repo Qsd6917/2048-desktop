@@ -645,6 +645,19 @@ async function main() {
   check('浮层打开时 body 挂上 is-overlay-open', stack.bodyClass === true);
   check('浮层标题中心取到的不是 canvas', stack.hitTag !== 'CANVAS', String(stack.hitTag));
 
+  const stageWin = JSON.parse(await evalJs(`(function () {
+    var root = document.documentElement;
+    return JSON.stringify({
+      tint: root.style.getPropertyValue('--stage-tint'),
+      glow: root.style.getPropertyValue('--stage-glow'),
+      transition: getComputedStyle(document.body).transitionDuration
+    });
+  })()`));
+  check('最大块 2048 时背景切到金档',
+    stageWin.tint === 'var(--stage-tint-3)' && stageWin.glow === 'var(--stage-glow-3)',
+    stageWin.tint + ' / ' + stageWin.glow);
+  check('背景换档带 600ms 过渡', stageWin.transition === '0.6s', stageWin.transition);
+
   await click('#newGame');
   await wait(200);
   const afterRestart = await fxPixels();
@@ -658,6 +671,10 @@ async function main() {
   })()`));
   check('浮层关闭后 #fx 回到 40 层', zState.z === '40', zState.z);
   check('浮层关闭后 body 的类也摘掉', zState.bodyClass === false);
+
+  const stageFresh = await evalJs('document.documentElement.style.getPropertyValue("--stage-tint")');
+  check('新局最大块回到 2 档，背景回纸张色',
+    stageFresh === 'var(--stage-tint-0)', stageFresh);
 
   /* ---------- T5c reduce 下抽屉没有入场动画 ---------- */
   console.log('\n[T5c] reduce-motion：抽屉不做淡入/滑入');
@@ -682,6 +699,9 @@ async function main() {
     sheetAnim.sheetName === 'none', sheetAnim.sheetName);
   check('reduce 下 .sheet__panel 的 animation-name 为 none',
     sheetAnim.panelName === 'none', sheetAnim.panelName);
+  check('reduce 下背景换档不走过渡',
+    (await evalJs('getComputedStyle(document.body).transitionProperty')) === 'none',
+    await evalJs('getComputedStyle(document.body).transitionProperty'));
 
   await press('Escape');
   await wait(150);
