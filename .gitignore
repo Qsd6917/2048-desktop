@@ -1,0 +1,4 @@
+.superpowers/
+.plans/
+node_modules/
+*.log
