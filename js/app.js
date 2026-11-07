@@ -70,6 +70,11 @@
   var TOAST_LIMIT = 3;
   /** 成就解锁提示的停留时长 */
   var TOAST_MS = 4000;
+  /**
+   * 焦点陷阱的候选元素。
+   * 刻意只收这几种：模态里可聚焦的东西就这些，多开会把静态文本也卷进循环。
+   */
+  var FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -287,6 +292,8 @@
    * 按钮状态才和 AI 的实际行为一致。
    */
   var autoplayPausedBySheet = false;
+  /** 抽屉打开顺序（只存 'review' / 'ach'）：Esc 关栈顶 */
+  var sheetStack = [];
 
   /** 动画期间缓冲的玩家方向：最多一格，只保留最后一次按键（不进撤销语义） */
   var pendingDir = null;
@@ -329,6 +336,47 @@
   /** 动画中、结算浮层挡住棋盘、抽屉开着、或这一局已经结束时，都不接受新输入 */
   function isLocked() {
     return state.over || state.busy || !els.overlay.hidden || isReviewOpen() || isAchOpen();
+  }
+
+  /**
+   * 把 Tab / Shift+Tab 关在模态容器内：走到最后一个可聚焦元素后回第一个，反向反之。
+   *
+   * 只做首尾循环，不碰 inert —— 背景控件用键盘走不到就够了，改动面最小。
+   * 容器里一个可聚焦元素都没有时什么都不做，让浏览器按默认行为走。
+   *
+   * @param {HTMLElement} container 模态容器（.sheet 或 #overlay）
+   * @param {KeyboardEvent} event keydown 事件
+   * @returns {boolean} 是否已经把焦点改到了另一端（调用方据此 preventDefault）
+   */
+  function trapFocus(container, event) {
+    if (!container) return false;
+
+    var nodes = container.querySelectorAll(FOCUSABLE);
+    var items = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].disabled) continue;
+      // display:none / hidden 的元素 offsetParent 为 null，跳过才不会把焦点送进看不见的按钮
+      if (nodes[i].offsetParent === null) continue;
+      items.push(nodes[i]);
+    }
+    if (!items.length) return false;
+
+    var index = items.indexOf(document.activeElement);
+
+    if (event.shiftKey) {
+      // 焦点不在容器内（刚打开、或停在容器本身）时，反向也先落到最后一个
+      if (index <= 0) {
+        items[items.length - 1].focus();
+        return true;
+      }
+      return false;
+    }
+
+    if (index === -1 || index === items.length - 1) {
+      items[0].focus();
+      return true;
+    }
+    return false;
   }
 
   /** 毫秒 -> mm:ss（向上取整，这样 180000 显示 03:00 而不是 02:59） */
@@ -900,6 +948,18 @@
     '</div>';
   }
 
+  /* ---------- 抽屉的公共行为：互斥、栈、计时与托管的暂停恢复 ---------- */
+
+  /** 记下抽屉的打开顺序（重复打开不重复入栈） */
+  function pushSheet(id) {
+    if (sheetStack.indexOf(id) < 0) sheetStack.push(id);
+  }
+
+  function removeSheet(id) {
+    var index = sheetStack.indexOf(id);
+    if (index >= 0) sheetStack.splice(index, 1);
+  }
+
   /** 抽屉打开：正在托管的话先暂停并记住，关闭时才知道要不要恢复 */
   function pauseAutoplayForSheet() {
     if (!autoplay) return;
@@ -921,44 +981,80 @@
     enableAutoplay();
   }
 
+  /**
+   * 关掉一个抽屉。
+   *
+   * @param {string} id 'review' 或 'ach'
+   * @param {{keepFocus?: boolean, keepPaused?: boolean}} [options]
+   *        keepFocus  不归还焦点：互斥切换时焦点交给紧接着打开的面板
+   *        keepPaused 不恢复计时与托管：同上，两件事都由下一个面板接管
+   */
+  function closeSheet(id, options) {
+    var sheet = id === 'ach' ? els.achSheet : els.reviewSheet;
+    if (!sheet || sheet.hidden) return;
+
+    var keepFocus = !!options && options.keepFocus === true;
+    var keepPaused = !!options && options.keepPaused === true;
+
+    sheet.hidden = true;
+    removeSheet(id);
+    // 背景滚动锁属于「还有抽屉开着」：两个抽屉互斥，这里总能正确解除
+    if (!isReviewOpen() && !isAchOpen()) document.body.classList.remove('is-sheet-open');
+
+    // 计时与托管的恢复放在同一个开关后面：互斥切换时它们由新面板接管，
+    // 这里提前恢复会出现「刚起表就被下一个面板停掉」和「托管在面板背后空转」两种抖动
+    if (!keepPaused) {
+      startCountdown();   // 抽屉守卫写在 startCountdown 里：另一个还开着就不起表
+      resumeAutoplayAfterSheet();
+    }
+
+    var target = id === 'ach' ? achReturnFocus : reviewReturnFocus;
+    if (id === 'ach') achReturnFocus = null;
+    else reviewReturnFocus = null;
+
+    if (keepFocus) return;
+
+    var entrance = id === 'ach' ? els.achOpen : els.reviewOpen;
+    // 归还目标可能已不可见（被互斥切换关掉、或被重渲染过），这种时候退回入口按钮
+    if (target && target !== document.body && typeof target.focus === 'function' &&
+        document.contains(target) && target.offsetParent !== null) {
+      target.focus();
+    } else if (entrance) {
+      entrance.focus();
+    }
+  }
+
   function openReview() {
     if (!els.reviewSheet) return;
 
+    // 抽屉互斥：成就开着就先关掉它。焦点与「暂停」都不断档，
+    // 由这个面板接手 —— 否则关掉下层会把焦点还给已经被遮住的入口按钮。
+    var inherited = null;
+    if (isAchOpen()) {
+      inherited = achReturnFocus;
+      achReturnFocus = null;
+      closeSheet('ach', { keepFocus: true, keepPaused: true });
+    }
+
     pauseAutoplayForSheet();   // 抽屉挡住棋盘，托管排了期也走不动：显式暂停
     stopCountdown();           // 限时局看复盘不计时：抽屉开着时不能被判超时
-    reviewReturnFocus = document.activeElement;
+    reviewReturnFocus = inherited || document.activeElement;
     try {
       renderReviewSheet();
     } catch (err) {
-      // 计时已经停了，这里绝不能再抛出去：否则抽屉没打开、closeReview 也永远不会被调用，
+      // 计时已经停了，这里绝不能再抛出去：否则抽屉没打开、closeSheet 也永远不会被调用，
       // 限时局从此不扣时。宁可显示一句错误提示，让玩家关掉抽屉恢复计时。
       renderReviewError();
     } finally {
       els.reviewSheet.hidden = false;
+      pushSheet('review');
       document.body.classList.add('is-sheet-open');
       if (els.reviewClose) els.reviewClose.focus();
     }
   }
 
   function closeReview() {
-    if (!els.reviewSheet || els.reviewSheet.hidden) return;
-
-    els.reviewSheet.hidden = true;
-    document.body.classList.remove('is-sheet-open');
-    // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
-    startCountdown();
-    // 托管是打开抽屉时暂停的，关掉之后恢复 —— 另一个抽屉还开着就不恢复
-    resumeAutoplayAfterSheet();
-
-    var target = reviewReturnFocus;
-    reviewReturnFocus = null;
-    // 鼠标点开的按钮通常不是 activeElement（浏览器差异），这种情况直接还给复盘入口
-    if (target && target !== document.body && typeof target.focus === 'function' &&
-        document.contains(target)) {
-      target.focus();
-    } else if (els.reviewOpen) {
-      els.reviewOpen.focus();
-    }
+    closeSheet('review');
   }
 
   /** 复盘抽屉是否开着；开着时锁住棋盘输入与托管 */
@@ -1040,33 +1136,26 @@
   function openAchievements() {
     if (!els.achSheet) return;
 
+    // 与复盘同一套互斥：复盘开着就先关掉，焦点与暂停都由这个面板接手续管
+    var inherited = null;
+    if (isReviewOpen()) {
+      inherited = reviewReturnFocus;
+      reviewReturnFocus = null;
+      closeSheet('review', { keepFocus: true, keepPaused: true });
+    }
+
     pauseAutoplayForSheet();   // 与复盘一致：面板开着时托管暂停，关闭后再恢复
     stopCountdown();           // 与复盘一致：面板开着时不计时，避免背面被判超时
-    achReturnFocus = document.activeElement;
+    achReturnFocus = inherited || document.activeElement;
     renderAchSheet();
     els.achSheet.hidden = false;
+    pushSheet('ach');
     document.body.classList.add('is-sheet-open');
     if (els.achClose) els.achClose.focus();
   }
 
   function closeAchievements() {
-    if (!els.achSheet || els.achSheet.hidden) return;
-
-    els.achSheet.hidden = true;
-    document.body.classList.remove('is-sheet-open');
-    // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
-    startCountdown();
-    // 托管是打开面板时暂停的，关掉之后恢复 —— 另一个面板还开着就不恢复
-    resumeAutoplayAfterSheet();
-
-    var target = achReturnFocus;
-    achReturnFocus = null;
-    if (target && target !== document.body && typeof target.focus === 'function' &&
-        document.contains(target)) {
-      target.focus();
-    } else if (els.achOpen) {
-      els.achOpen.focus();
-    }
+    closeSheet('ach');
   }
 
   /** 成就面板是否开着；开着时锁住棋盘输入与托管 */
@@ -1440,11 +1529,15 @@
   /** 只在限时模式、且有剩余时间时才起表；重复调用等价于重设基准 */
   function startCountdown() {
     stopCountdown();
+    // 抽屉挡着棋盘、或这一局已经结束时一律不起表。
+    // 这一条统一管住所有「关掉一个抽屉就恢复计时」的口子：closeSheet、undo、
+    // startNewGame、continuePlaying 都不必各自再判一次「另一个抽屉还开着吗」。
+    if (isReviewOpen() || isAchOpen() || state.over) return;
     if (MODES[settings.mode].timeLimitMs <= 0) {
       renderTimer();
       return;
     }
-    if (state.over || state.remainingMs <= 0) {
+    if (state.remainingMs <= 0) {
       renderTimer();
       return;
     }
@@ -2121,10 +2214,11 @@
     els.overlay.classList.toggle('is-lose', tone === 'lose');
     els.overlay.hidden = false;
 
-    // 结算浮层是唯一的强提示：读屏用户如果不把焦点送进去，根本不知道这一局结束了
+    // 结算浮层是唯一的强提示：读屏用户如果不把焦点送进去，根本不知道这一局结束了。
+    // 但抽屉开着时焦点必须留在玩家正在看的面板里，不能被背后的浮层抢走。
     var primary = els.overlayActions.querySelector('.btn--primary') ||
       els.overlayActions.querySelector('button');
-    if (primary) primary.focus();
+    if (primary && !isReviewOpen() && !isAchOpen()) primary.focus();
 
     // 浮层挡着棋盘时不给倒计时扣时间，玩家可以慢慢想
     stopCountdown();
@@ -2304,21 +2398,24 @@
 
     var key = (event.key || '').toLowerCase();
 
-    // 复盘抽屉开着时只认 Esc：方向键、R、撤销都等关掉之后再起作用
-    if (isReviewOpen()) {
+    // 抽屉开着时只认 Esc 与 Tab：方向键、R、撤销都等关掉之后再起作用。
+    // Esc 关栈顶（后打开的那个），不再写死「先判复盘」。
+    if (sheetStack.length) {
+      var topId = sheetStack[sheetStack.length - 1];
       if (key === 'escape') {
         event.preventDefault();
-        closeReview();
+        closeSheet(topId);
+      } else if (key === 'tab') {
+        if (trapFocus(topId === 'ach' ? els.achSheet : els.reviewSheet, event)) {
+          event.preventDefault();
+        }
       }
       return;
     }
 
-    // 成就面板同理：只认 Esc，棋盘输入等关掉之后再说
-    if (isAchOpen()) {
-      if (key === 'escape') {
-        event.preventDefault();
-        closeAchievements();
-      }
+    // 结算浮层也是模态：Tab 只在浮层里循环，方向键照旧被 isLocked() 挡住
+    if (key === 'tab' && !els.overlay.hidden) {
+      if (trapFocus(els.overlay, event)) event.preventDefault();
       return;
     }
 

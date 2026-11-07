@@ -1054,8 +1054,113 @@ async function main() {
     await wait(300);
   }
 
-  /* ---------- T18 控制台 ---------- */
-  console.log('\n[T18] 控制台');
+  /* ---------- T18 两个抽屉互斥，Esc 关栈顶 ---------- */
+  console.log('\n[T18] 两个抽屉互斥：只剩一个可见，Esc 关后打开的那个');
+
+  await loadBoard(BOARD_RIGHT_COL, 'classic');
+  await click('#reviewOpen');
+  await wait(250);
+  check('复盘抽屉已打开', (await sheetHidden('reviewSheet')) === false);
+
+  await click('#achOpen');   // 复盘开着时再从入口打开成就
+  await wait(250);
+
+  const visibleSheets = await evalJs(`(function () {
+    var ids = ['reviewSheet', 'achSheet'];
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      if (!document.getElementById(ids[i]).hidden) out.push(ids[i]);
+    }
+    return out.join(',');
+  })()`);
+  // 旧实现两个 sheet 可以同时 hidden=false：这里会读到 "reviewSheet,achSheet"
+  check('同时只允许一个抽屉可见', visibleSheets === 'achSheet', visibleSheets || '(都不可见)');
+  check('复盘在成就打开时就已关掉', (await sheetHidden('reviewSheet')) === true);
+
+  await press('Escape');
+  await wait(200);
+  // 旧实现的 onKeyDown 先判 isReviewOpen()，Esc 关的是下层复盘，成就面板留在屏幕上
+  check('Esc 关掉的是后打开的成就面板', (await sheetHidden('achSheet')) === true);
+  check('关闭后焦点回到成就入口',
+    (await evalJs('document.activeElement && document.activeElement.id')) === 'achOpen',
+    await evalJs('document.activeElement && document.activeElement.id'));
+
+  /* ---------- T19 抽屉的焦点陷阱 + 状态行的可访问性 ---------- */
+  console.log('\n[T19] 复盘抽屉里的 Tab 不逃到背景控件');
+
+  await loadBoard(BOARD_RIGHT_COL, 'classic');
+  await click('#reviewOpen');
+  await wait(250);
+  check('打开后焦点落在关闭按钮上',
+    (await evalJs('document.activeElement && document.activeElement.id')) === 'reviewClose',
+    await evalJs('document.activeElement && document.activeElement.id'));
+
+  /**
+   * 模拟一次 Tab 并回报焦点是否还在复盘抽屉里。
+   *
+   * 合成的 KeyboardEvent 不会触发浏览器默认的「移动焦点」，所以这里按全局 DOM 顺序
+   * 手动补上默认行为 —— 只有应用 preventDefault（也就是焦点陷阱接住了）时才跳过这一补。
+   * 少了这一步，旧代码会「看起来也没逃出去」，断言就失去意义。
+   */
+  const tabStep = (shift) => evalJs(`(function (back) {
+    var SEL = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    function visible(root) {
+      var nodes = root.querySelectorAll(SEL);
+      var out = [];
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].disabled || nodes[i].offsetParent === null) continue;
+        out.push(nodes[i]);
+      }
+      return out;
+    }
+    var ev = new KeyboardEvent('keydown', {
+      key: 'Tab', shiftKey: back, bubbles: true, cancelable: true
+    });
+    var prevented = false;
+    function spy(e) { if (e === ev) prevented = e.defaultPrevented; }
+    document.addEventListener('keydown', spy);
+    document.dispatchEvent(ev);
+    document.removeEventListener('keydown', spy);
+
+    if (!prevented) {
+      var all = visible(document);
+      var index = all.indexOf(document.activeElement);
+      var next = all[(index + (back ? -1 : 1) + all.length) % all.length];
+      if (next) next.focus();
+    }
+
+    var sheet = document.getElementById('reviewSheet');
+    var active = document.activeElement;
+    return JSON.stringify({
+      inside: sheet.contains(active),
+      who: active ? (active.id || active.className) : 'null',
+      prevented: prevented
+    });
+  })(${shift ? 'true' : 'false'})`);
+
+  const escaped = [];
+  let caught = 0;
+  for (let i = 0; i < 14; i++) {
+    const step = JSON.parse(await tabStep(false));
+    if (!step.inside) escaped.push(i + ':' + step.who);
+    if (step.prevented) caught++;
+  }
+  // 旧实现没有任何拦住 Tab 的地方，焦点走出抽屉正文后会落到背景的 #newGame 等按钮上
+  check('连按 14 次 Tab，焦点始终在复盘面板内', escaped.length === 0, escaped.join(' ') || 'ok');
+  check('末位 Tab 被焦点陷阱接住并回卷', caught >= 1, 'caught=' + caught);
+
+  const escapedBack = [];
+  for (let i = 0; i < 3; i++) {
+    const step = JSON.parse(await tabStep(true));
+    if (!step.inside) escapedBack.push(i + ':' + step.who);
+  }
+  check('Shift+Tab 也不会逃出面板', escapedBack.length === 0, escapedBack.join(' ') || 'ok');
+
+  await press('Escape');
+  await wait(150);
+
+  /* ---------- T20 控制台 ---------- */
+  console.log('\n[T20] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
