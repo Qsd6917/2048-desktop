@@ -269,6 +269,14 @@
     if (!s || typeof s !== 'object') return false;
     if (!Array.isArray(s.worst)) return false;
 
+    // 逐条校验 worst：analyze 与 blunderHtml 都会直接取 index / delta 做运算与 toFixed，
+    // 只看「是数组」不够 —— {worst:[{}]} 能过关却在渲染时抛异常。
+    for (var i = 0; i < s.worst.length; i++) {
+      var item = s.worst[i];
+      if (!item || typeof item !== 'object') return false;
+      if (!isFiniteNumber(item.index) || !isFiniteNumber(item.delta)) return false;
+    }
+
     return isFiniteNumber(s.avgLoss) && isFiniteNumber(s.consistency) && isFiniteNumber(s.scored);
   }
 

@@ -227,6 +227,14 @@ group('isUsableSummary 只认字段齐全的落盘 summary', () => {
   ok('summarize 的产物一定可用', Review.isUsableSummary(good) === true);
   ok('空对象不可用', Review.isUsableSummary({}) === false);
   ok('worst 不是数组不可用', Review.isUsableSummary({ worst: 'x' }) === false);
+  ok('worst 里混进空对象不可用',
+    Review.isUsableSummary({ worst: [{}], avgLoss: 1, consistency: 0.5, scored: 2 }) === false);
+  ok('worst 条目缺 delta 不可用',
+    Review.isUsableSummary({ worst: [{ index: 3 }], avgLoss: 1, consistency: 0.5, scored: 2 }) === false);
+  ok('worst 条目 delta 是字符串不可用',
+    Review.isUsableSummary({ worst: [{ index: 3, delta: '2' }], avgLoss: 1, consistency: 0.5, scored: 2 }) === false);
+  ok('worst 条目齐全则可用',
+    Review.isUsableSummary({ worst: [{ index: 3, delta: 2 }], avgLoss: 1, consistency: 0.5, scored: 2 }) === true);
   ok('指标是字符串不可用',
     Review.isUsableSummary({ worst: [], avgLoss: '1.2', consistency: 0, scored: 0 }) === false);
   ok('缺 scored 不可用',
