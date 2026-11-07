@@ -55,7 +55,7 @@
     { id: 'daily_7', name: '七日不辍', desc: '每日挑战连续 7 天', tier: 'silver', metric: 'dailyStreak', target: 7 },
     { id: 'daily_30', name: '三十日', desc: '每日挑战连续 30 天', tier: 'gold', metric: 'dailyStreak', target: 30 },
     { id: 'daily_win', name: '每日达标', desc: '在每日挑战中达成目标', tier: 'silver', metric: 'dailyWins', target: 1 },
-    { id: 'perfect_10', name: '与 AI 同频', desc: '单日复盘里 10 步与 AI 一致', tier: 'silver', metric: 'perfectMoves', target: 10 },
+    { id: 'perfect_10', name: '与 AI 同频', desc: '累计 10 步与 AI 一致', tier: 'silver', metric: 'perfectMoves', target: 10 },
     { id: 'size_6', name: '六乘六', desc: '在 6×6 棋盘完成一局', tier: 'bronze', metric: 'sizes.6', target: 1 },
     { id: 'obstacle_win', name: '障碍通关', desc: '在障碍模式达成目标', tier: 'silver', metric: 'modeWins.obstacle', target: 1 }
   ];

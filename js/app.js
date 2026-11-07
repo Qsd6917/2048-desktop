@@ -1161,6 +1161,9 @@
    * 复盘汇总落盘时累加「与 AI 一致步数」。
    * 同一局可能结算两次（达成目标 + 最终结算），所以按本局已计入的数量补差；
    * 同一天多打几局则各自实际累加，不做跨局去重。
+   *
+   * 已知下限：复盘日志只留最近 240 步（review.js 的 MAX_MOVES），
+   * 超长局更早的步会被裁掉，perfectMoves 因此会少记 —— 只少不多，不会误加。
    */
   function recordReviewAchievements(summary) {
     if (!summary || !Achievements) return;
@@ -2160,10 +2163,26 @@
    * 状态与「继续挑战」一致（keepPlaying + won 保持 true），区别只有三点：
    * 不弹浮层（会夺焦点）、不停托管（否则整局冻在这一步）、不停计时（限时局照走）。
    * 这一局该记的分、该放的彩带、该入的复盘一样不少，只是没有一个要人点的按钮。
+   *
+   * 例外：这一步收尾时若有缓冲方向（玩家在动画里按了键），说明玩家正在接管 ——
+   * 那就关托管、入账、兑现那一手，不再排下一轮托管。
    */
   function autoContinue() {
     state.over = false;
     state.keepPlaying = true;
+
+    // 托管走到目标时玩家正好按了方向：这一下就是接管信号。
+    // finishTurn 的常规收尾会 flushPendingDir，但 autoContinue 直接 return 会跳过它，
+    // 缓冲的方向就被推迟到「AI 又多走一步」之后。这里先关托管、入账落盘，
+    // 再当场兑现这一手，不排下一轮托管。
+    if (pendingDir) {
+      disableAutoplay();
+      bankResult('win');
+      saveState();
+      // 方向推不动、棋盘又已无解时不能就这么收场：否则又留下一个没有浮层的死盘
+      if (!flushPendingDir() && !G.hasMoves(state.board)) finishGame('stuck');
+      return;
+    }
 
     bankResult('win');
 
