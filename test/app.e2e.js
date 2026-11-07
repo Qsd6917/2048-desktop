@@ -248,17 +248,26 @@ async function main() {
     throw new Error('页面重载后没有就绪');
   }
 
-  /** 注入一份存档（含设置），重载后从这份盘面继续 */
-  async function loadBoard(values, mode) {
+  /**
+   * 注入一份存档（含设置），重载后从这份盘面继续。
+   * extra 用来补双人的 players / turn 等字段；不传时与原行为一致。
+   *
+   * @param {number[][]} values 盘面
+   * @param {string} mode 模式
+   * @param {object} [extra] 追加到存档对象上的字段
+   */
+  async function loadBoard(values, mode, extra) {
+    const state = Object.assign({
+      version: 2, size: 4, mode: mode,
+      values: values,
+      score: 0, won: false, keepPlaying: false,
+      remainingMs: mode === 'timed' ? 180000 : 0,
+      obstaclesAdded: 0, moves: 0
+    }, extra || {});
+
     await evalJs(`(function () {
       Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: ${JSON.stringify(mode)}, sound: false });
-      Game2048Storage.set(Game2048Storage.KEYS.state, {
-        version: 2, size: 4, mode: ${JSON.stringify(mode)},
-        values: ${JSON.stringify(values)},
-        score: 0, won: false, keepPlaying: false,
-        remainingMs: ${mode === 'timed' ? 180000 : 0},
-        obstaclesAdded: 0, moves: 0
-      });
+      Game2048Storage.set(Game2048Storage.KEYS.state, ${JSON.stringify(state)});
       return 1;
     })()`);
     await reload();
@@ -1490,8 +1499,92 @@ async function main() {
   await press('Escape');
   await wait(200);
 
-  /* ---------- T22 控制台 ---------- */
-  console.log('\n[T22] 控制台');
+  /* ---------- T22 双人对战 ---------- */
+  console.log('\n[T22] 双人对战');
+
+  // 先走 UI：点设置面板里的「双人」，看 HUD 换成两块比分、两个按钮被压住
+  await click('#modeGroup [data-mode="duel"]');
+  await wait(600);
+  check('切到双人后两个玩家分数块可见',
+    await evalJs('!document.getElementById("p1Block").hidden && ' +
+      '!document.getElementById("p2Block").hidden'));
+  check('双人下隐藏原来的总分块', await evalJs('document.getElementById("scoreBox").hidden'));
+  check('双人下撤销按钮禁用', await evalJs('document.getElementById("undo").disabled'));
+  check('双人下托管按钮禁用', await evalJs('document.getElementById("autoplay").disabled'));
+  check('双人下计时器隐藏', await evalJs('document.getElementById("timer").hidden'));
+
+  // 两行各有一对 2+2：一步左移合计 8 分，正好验证「一步多次合并全归当前玩家」
+  const BOARD_DUEL_PAIRS = [
+    [2, 2, 0, 0],
+    [0, 0, 2, 2],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ];
+  await loadBoard(BOARD_DUEL_PAIRS, 'duel', { players: [0, 0], turn: 0 });
+  check('注入双人盘面后轮到玩家 1', (await text('#turnLabel')) === '轮到玩家 1',
+    await text('#turnLabel'));
+
+  await withFixedRandom(async () => {
+    await press('ArrowLeft');
+    await wait(900);
+    check('玩家 1 一次走子拿满 8 分', (await text('#p1Score')) === '8', await text('#p1Score'));
+    check('玩家 2 仍是 0 分', (await text('#p2Score')) === '0', await text('#p2Score'));
+    check('走完一步换到玩家 2', (await text('#turnLabel')) === '轮到玩家 2',
+      await text('#turnLabel'));
+    check('双人下撤销按钮仍然禁用（没有历史）',
+      await evalJs('document.getElementById("undo").disabled'));
+
+    await press('ArrowDown');   // 左列两个 4 合成 8，这一步归玩家 2
+    await wait(900);
+    check('玩家 2 走子后拿到 8 分', (await text('#p2Score')) === '8', await text('#p2Score'));
+    check('玩家 1 保持 8 分', (await text('#p1Score')) === '8', await text('#p1Score'));
+    check('再走一步换回玩家 1', (await text('#turnLabel')) === '轮到玩家 1',
+      await text('#turnLabel'));
+  });
+
+  // 存档：刷新后两人比分与回合都要原样接着走
+  const duelSaved = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state))'));
+  check('存档里带上 players / turn',
+    Boolean(duelSaved) && duelSaved.turn === 0 &&
+      JSON.stringify(duelSaved.players) === '[8,8]',
+    duelSaved ? 'turn=' + duelSaved.turn + ' players=' + JSON.stringify(duelSaved.players) : 'null');
+
+  await reload();
+  check('刷新后两人比分保持', (await text('#p1Score')) === '8' && (await text('#p2Score')) === '8',
+    (await text('#p1Score')) + ' / ' + (await text('#p2Score')));
+  check('刷新后回合保持为玩家 1', (await text('#turnLabel')) === '轮到玩家 1',
+    await text('#turnLabel'));
+
+  // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
+  const statsBeforeDuelWin = await stats();
+  await loadBoard([
+    [1024, 1024, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'duel', { players: [4, 8], turn: 1, score: 12 });
+  await press('ArrowLeft');
+  await wait(900);
+  check('双人达成目标浮层打开', (await overlayHidden()) === false);
+  check('标题写「玩家 2 达成目标」（刚走完这一步的人获胜）',
+    (await text('#overlayTitle')) === '玩家 2 达成目标', await text('#overlayTitle'));
+  check('双人结算不给「继续挑战」', await evalJs(`(function () {
+    var buttons = document.querySelectorAll('#overlayActions button');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].textContent === '继续挑战') return false;
+    }
+    return true;
+  })()`));
+
+  const statsAfterDuelWin = await stats();
+  check('双人局不写 stats（games 不变）', statsAfterDuelWin.games === statsBeforeDuelWin.games,
+    statsBeforeDuelWin.games + ' -> ' + statsAfterDuelWin.games);
+  check('双人局不写 totalMoves', statsAfterDuelWin.totalMoves === statsBeforeDuelWin.totalMoves,
+    statsBeforeDuelWin.totalMoves + ' -> ' + statsAfterDuelWin.totalMoves);
+
+  /* ---------- T23 控制台 ---------- */
+  console.log('\n[T23] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
