@@ -13,52 +13,55 @@
         <h1>2048</h1>
         <p class="hint">方向键或 WASD 移动 · Ctrl+Z 撤销 · R 重开</p>
       </div>
-      <div class="scores" aria-live="polite">
-        <div class="score-box">
-          <span class="score-label">得分</span>
-          <span class="score-value" id="score">0</span>
-          <span class="score-gain" id="scoreGain" aria-hidden="true"></span>
-        </div>
-        <div class="score-box score-box--best">
-          <span class="score-label">最高</span>
-          <span class="score-value" id="best">0</span>
-        </div>
-      </div>
     </header>
 
+    <!-- 五个指标同一套仪表语言：上标签、下数值；限时以外模式计时器整格隐藏 -->
     <div class="hud">
-      <span class="hud-item">目标 <b class="hud-value" id="goal"></b></span>
-      <span class="hud-item">最大 <b class="hud-value" id="maxTile"></b></span>
-      <span class="hud-item hud-timer" id="timer" hidden></span>
+      <div class="hud-item hud-item--score" aria-live="polite">
+        <span class="hud-label">得分</span>
+        <span class="hud-value" id="score">0</span>
+        <span class="hud-gain" id="scoreGain" aria-hidden="true"></span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">最高</span>
+        <span class="hud-value" id="best">0</span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">目标</span>
+        <span class="hud-value" id="goal"></span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">最大</span>
+        <span class="hud-value" id="maxTile"></span>
+      </div>
+      <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素 -->
+      <div class="hud-item hud-timer" id="timer" hidden></div>
     </div>
 
-    <div class="toolbar">
+    <div class="controls" id="extras">
       <button class="btn btn--primary" id="newGame" type="button">新游戏</button>
       <button class="btn" id="undo" type="button" disabled>撤销</button>
+      <button class="btn" id="hint" type="button">提示</button>
+      <button class="btn btn--toggle" id="autoplay" type="button" aria-pressed="false">托管：关</button>
+      <button class="btn btn--toggle is-active" id="openSettings" type="button" aria-expanded="true" aria-controls="settingsPanel">设置</button>
     </div>
 
-    <div class="extras" id="extras">
-      <div class="toolbar toolbar--extras">
-        <button class="btn" id="hint" type="button">提示</button>
-        <button class="btn btn--toggle" id="autoplay" type="button" aria-pressed="false">托管：关</button>
-        <button class="btn btn--toggle" id="openSettings" type="button" aria-expanded="true" aria-controls="settingsPanel">设置</button>
+    <div class="settings" id="settingsPanel">
+      <span class="settings-label" id="sizeLabel">尺寸</span>
+      <div class="settings-group" id="sizeGroup" role="group" aria-labelledby="sizeLabel">
+        <button class="btn btn--chip" type="button" data-size="4" aria-pressed="false">4×4</button>
+        <button class="btn btn--chip" type="button" data-size="5" aria-pressed="false">5×5</button>
+        <button class="btn btn--chip" type="button" data-size="6" aria-pressed="false">6×6</button>
       </div>
 
-      <div class="settings" id="settingsPanel">
-        <div class="settings-group" id="sizeGroup" role="group" aria-label="棋盘尺寸">
-          <button class="btn btn--chip" type="button" data-size="4" aria-pressed="false">4×4</button>
-          <button class="btn btn--chip" type="button" data-size="5" aria-pressed="false">5×5</button>
-          <button class="btn btn--chip" type="button" data-size="6" aria-pressed="false">6×6</button>
-        </div>
-
-        <div class="settings-group" id="modeGroup" role="group" aria-label="游戏模式">
-          <button class="btn btn--chip" type="button" data-mode="classic" aria-pressed="false">经典</button>
-          <button class="btn btn--chip" type="button" data-mode="timed" aria-pressed="false">限时</button>
-          <button class="btn btn--chip" type="button" data-mode="obstacle" aria-pressed="false">障碍</button>
-        </div>
-
-        <button class="btn btn--toggle" id="soundToggle" type="button" aria-pressed="true">音效：开</button>
+      <span class="settings-label" id="modeLabel">模式</span>
+      <div class="settings-group" id="modeGroup" role="group" aria-labelledby="modeLabel">
+        <button class="btn btn--chip" type="button" data-mode="classic" aria-pressed="false">经典</button>
+        <button class="btn btn--chip" type="button" data-mode="timed" aria-pressed="false">限时</button>
+        <button class="btn btn--chip" type="button" data-mode="obstacle" aria-pressed="false">障碍</button>
       </div>
+
+      <button class="btn btn--toggle btn--switch" id="soundToggle" type="button" aria-pressed="true">音效：开</button>
     </div>
 
     <div class="board" id="board" tabindex="0" role="application" aria-label="4×4 棋盘">

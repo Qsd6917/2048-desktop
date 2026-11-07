@@ -1,4 +1,43 @@
-/* ---------- 基础 ---------- */
+/* ==========================================================================
+   2048 · 样式
+   --------------------------------------------------------------------------
+   设计取向：暖灰纸感 + 木色。整页只有一个"主舞台"——棋盘，其余元素
+   （HUD、控制条、设置）一律压到次级，用低饱和底色 + 细边区分层次。
+
+   色彩分三层：
+     纸张层  #f4eee3 / #fbf7ef   页面、HUD、设置面板
+     木色层  #a08d7a / #8a7663   棋盘、主按钮、强调文字
+     方块层  经典 2048 的橙金     全页唯一的饱和色，注意力因此被锁在棋盘上
+
+   尺寸约定：4/5/6 三档棋盘的格子尺寸都由 renderer.js 写进 #board 的
+   --size / --pad / --gap / --cell / --radius，CSS 只消费、不重算；
+   所有跟格子相关的尺寸（字号、障碍斜纹）都用 --cell 推导，三档共用一套规则。
+   ========================================================================== */
+
+:root {
+  --paper: #f4eee3;
+  --paper-hi: #fbf7ef;
+
+  --ink: #6b6157;
+  --ink-faint: #8a7c6e;
+
+  --wood: #a08d7a;
+  --wood-deep: #8a7663;
+  --wood-dark: #6d5c4b;
+
+  --line: rgba(116, 97, 79, 0.16);
+  --line-strong: rgba(116, 97, 79, 0.3);
+
+  --accent: #b4703a;
+  --danger: #c2452d;
+
+  --radius-lg: 14px;
+  --radius-md: 12px;
+  --radius-sm: 9px;
+
+  --ease-out: cubic-bezier(0.32, 0.72, 0.28, 1);
+}
+
 *,
 *::before,
 *::after {
@@ -11,174 +50,263 @@ html {
 
 body {
   margin: 0;
-  min-height: 100%;
-  display: grid;
-  place-items: center;
-  padding: 28px 20px;
+  min-height: 100dvh;
+  padding: 24px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   background:
-    radial-gradient(900px 520px at 50% -12%, #fffdf7 0%, rgba(255, 253, 247, 0) 62%),
-    #faf8ef;
-  color: #776e65;
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    radial-gradient(760px 420px at 50% -8%, #fffdf8 0%, rgba(255, 253, 248, 0) 62%),
+    var(--paper);
+  color: var(--ink);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
+/*
+ * 竖直方向的尺寸分配：
+ *   1. 宽度同时受「视口宽」和「视口高」约束 —— 棋盘是正方形，宽高必须一起让，
+ *      否则高窗口里棋盘永远只有 452px、下面留一大截空白（问题 5）。
+ *      减掉的 330px 是标题、HUD、控制条、设置面板与页脚的固定开销。
+ *   2. margin-block: auto 让整块内容在多余空间里居中；空间不够时 auto 自动归零，
+ *      内容从顶部开始排、页面正常滚动，不会被"居中"裁掉上边缘。
+ */
 .app {
-  width: min(92vw, 452px);
+  width: min(100%, 500px, max(280px, calc(100dvh - 330px)));
+  margin-block: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---------- 顶栏 ---------- */
+
 .header {
+  margin-bottom: 10px;
+}
+
+.brand {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 2px;
 }
 
 .brand h1 {
   margin: 0;
-  font-size: 46px;
+  font-size: 40px;
   font-weight: 800;
-  letter-spacing: -0.035em;
-  color: #6f655c;
   line-height: 1;
-}
-
-.hint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #a89a8e;
-}
-
-.scores {
-  display: flex;
-  gap: 8px;
-  flex: none;
-}
-
-.score-box {
-  position: relative;
-  min-width: 82px;
-  padding: 7px 12px 9px;
-  border-radius: 9px;
-  background: #bbada0;
-  color: #f9f6f2;
-  text-align: center;
-  overflow: visible;
-}
-
-.score-box--best {
-  background: #a59688;
-}
-
-.score-label {
-  display: block;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  opacity: 0.82;
-}
-
-.score-value {
-  display: block;
-  font-size: 21px;
-  font-weight: 800;
-  line-height: 1.2;
+  letter-spacing: -0.045em;
+  color: #5f554b;
   font-variant-numeric: tabular-nums;
 }
 
-.score-gain {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 4px;
-  font-size: 17px;
-  font-weight: 800;
-  color: #8f7a66;
-  opacity: 0;
-  pointer-events: none;
+.hint {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-faint);
 }
 
-.score-gain.is-shown {
-  animation: float-up 640ms cubic-bezier(0.25, 0.7, 0.3, 1) both;
+/* ---------- HUD：得分 / 最高 / 目标 / 最大 / 计时 ---------- */
+
+/*
+ * 五个指标共用一个仪表条：同一种「小标签 + 大数值」的纵向结构，
+ * 只靠数值颜色区分主次，不再出现"两个方框 + 一行裸文字"的两套语言（问题 1）。
+ * 计时器是 flex 子项，隐藏时整格退出排布，剩下的四格自动均分宽度。
+ */
+.hud {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 9px;
+  background: var(--paper-hi);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 8px 18px -18px rgba(84, 66, 50, 0.9);
+  overflow: hidden;
+}
+
+.hud-item {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 4px 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  text-align: center;
+}
+
+.hud-item + .hud-item {
+  border-left: 1px solid var(--line);
+}
+
+.hud-label {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+.hud-value {
+  max-width: 100%;
+  font-size: clamp(13px, 3.6vw, 17.5px);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--wood-dark);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 得分是玩家真正在追的数，给一点木橙色；其余四个数值用同一档深灰棕 */
+.hud-item--score .hud-value {
+  color: var(--accent);
+}
+
+/*
+ * 加分的浮字：落在"得分"那格的小标签行上（不压数字），
+ * 带一块同色底把标签盖掉，飘 3px 后淡出；不撑开布局、不越出仪表条。
+ */
+.hud-gain {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--paper-hi);
+  box-shadow: 0 0 0 3px var(--paper-hi);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.3;
+  color: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.hud-gain.is-shown {
+  animation: float-up 640ms var(--ease-out) both;
 }
 
 @keyframes float-up {
   0% {
-    opacity: 1;
-    transform: translateY(0);
+    opacity: 0;
+    transform: translate(-50%, 4px);
   }
-  70% {
+  20% {
     opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  74% {
+    opacity: 1;
+    transform: translate(-50%, 0);
   }
   100% {
     opacity: 0;
-    transform: translateY(-32px);
+    transform: translate(-50%, -3px);
   }
 }
 
-/* ---------- 目标 / 最大 / 计时 ---------- */
-.hud {
-  display: flex;
-  gap: 14px;
-  margin-top: 10px;
-  font-size: 11px;
-  color: #a89a8e;
-}
-
-.hud-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-}
-
-.hud-value {
-  font-weight: 800;
-  color: #8f7a66;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 限时模式的倒计时；非限时模式靠 hidden 属性整段隐藏 */
+/*
+ * 计时器：控制器会把 #timer 的 textContent 整段替换成 mm:ss，
+ * 所以标签只能由 ::before 生成（伪元素不受 textContent 影响）。
+ */
 .hud-timer {
+  font-size: clamp(13px, 3.6vw, 17.5px);
   font-weight: 800;
-  color: #8f7a66;
+  line-height: 1.15;
+  color: var(--wood-dark);
   font-variant-numeric: tabular-nums;
 }
 
+.hud-timer::before {
+  content: "剩余";
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+/* 关键：.hud-item 是 flex，会盖掉 [hidden] 的 display:none，这里必须补回来 */
 .hud-timer[hidden] {
   display: none;
 }
 
+/* 剩余 ≤30s：红字 + 底部脉冲条，不使用位移，避免抖动 */
 .hud-timer.is-urgent {
-  color: #c2452d;
+  color: var(--danger);
+  background: rgba(194, 69, 45, 0.06);
+}
+
+.hud-timer.is-urgent::after {
+  content: "";
+  position: absolute;
+  left: 24%;
+  right: 24%;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--danger);
+  animation: timer-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes timer-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scaleX(0.72);
+  }
 }
 
 /* ---------- 按钮 ---------- */
-.toolbar {
-  display: flex;
-  gap: 8px;
-  margin: 16px 0 12px;
-}
 
+/*
+ * 按钮统一 32px 高的小尺寸：操作区不再比棋盘更醒目（问题 3）。
+ * 层级靠颜色而不是体量来区分——主按钮实心木色，其余是浅底/描边。
+ */
 .btn {
-  flex: 1;
-  padding: 10px 14px;
-  border: 0;
-  border-radius: 9px;
-  background: #d6cdc4;
-  color: #776e65;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: #ebe2d5;
+  color: #6f6255;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background-color 140ms ease, transform 90ms ease, box-shadow 140ms ease;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    transform 90ms ease,
+    box-shadow 150ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  background: #c8bdb2;
+  background: #e3d8c8;
 }
 
 .btn:active:not(:disabled) {
@@ -186,85 +314,193 @@ body {
 }
 
 .btn:disabled {
-  opacity: 0.42;
+  opacity: 0.4;
   cursor: default;
 }
 
-.btn--primary {
-  background: #8f7a66;
-  color: #f9f6f2;
-}
-
-.btn--primary:hover {
-  background: #7f6a56;
-}
-
 .btn:focus-visible {
-  outline: 0;
-  box-shadow: 0 0 0 3px rgba(143, 122, 102, 0.34);
+  outline: 2px solid rgba(138, 118, 99, 0.55);
+  outline-offset: 2px;
 }
 
-/* ---------- 尺寸 / 模式 / 音效（任务 4 的最小可用样式，视觉留给任务 5） ---------- */
-.extras {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
+.btn--primary {
+  background: var(--wood-deep);
+  color: #fdf9f2;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 6px 14px -9px rgba(84, 66, 50, 1);
 }
 
-.toolbar--extras {
-  margin: 0;
+.btn--primary:hover:not(:disabled) {
+  background: #7d6a57;
+  color: #fdf9f2;
 }
 
-.settings {
-  display: flex;
-  flex-wrap: wrap;
+.btn--toggle {
+  background: transparent;
+  border-color: var(--line);
+  color: #8b7d70;
+}
+
+.btn--toggle:hover:not(:disabled) {
+  background: rgba(160, 141, 122, 0.1);
+  border-color: var(--line-strong);
+}
+
+.btn--toggle.is-active {
+  background: rgba(138, 118, 99, 0.16);
+  border-color: rgba(138, 118, 99, 0.4);
+  color: #584a3c;
+}
+
+/* 悬停时也不能把"已开启"的状态盖掉，所以带 is-active 的补偿规则要更强 */
+.btn--toggle.is-active:hover:not(:disabled) {
+  background: rgba(138, 118, 99, 0.24);
+  border-color: rgba(138, 118, 99, 0.52);
+  color: #4b3e31;
+}
+
+/* 托管 / 音效这类"开关"在文字前带一个状态点，比纯换底色更易扫读 */
+#autoplay::before,
+#soundToggle::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.32;
+}
+
+#autoplay,
+#soundToggle {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px;
-  border-radius: 10px;
-  background: rgba(214, 205, 196, 0.3);
+  justify-content: center;
+}
+
+#autoplay.is-active::before {
+  opacity: 1;
+  background: #7f9a5e;
+  animation: dot-blink 1.6s ease-in-out infinite;
+}
+
+#soundToggle.is-active::before {
+  opacity: 1;
+  background: var(--accent);
+}
+
+@keyframes dot-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------- 控制条 ---------- */
+
+/*
+ * 一行五个按钮：新游戏 / 撤销 / 提示 / 托管 / 设置。
+ * 用 grid 按权重分列，窄屏也不会换行（换行会让操作区又高又散）。
+ */
+.controls {
+  display: grid;
+  grid-template-columns: 1.15fr 0.92fr 0.86fr 1.28fr 0.84fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* ---------- 设置面板 ---------- */
+
+/*
+ * 两列网格：左列是分组标签，右列是分段控件。
+ * 尺寸、模式、音效各占一行，语义不再混在一排 chips 里（问题 2）。
+ * 面板刻意做得比 HUD 暗、比 HUD 平（无投影），是"抽屉"而不是卡片，
+ * 免得它和棋盘抢注意力。
+ */
+.settings {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px 10px;
+  margin-bottom: 9px;
+  padding: 9px 10px 10px;
+  background: rgba(94, 76, 58, 0.055);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
 }
 
 .settings[hidden] {
   display: none;
 }
 
+.settings-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+}
+
+/* 分段控件：内嵌凹槽 + 选中项抬起的白色小块 */
 .settings-group {
-  display: flex;
-  flex: 1 1 auto;
-  gap: 6px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 3px;
+  background: rgba(94, 76, 58, 0.09);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 2px rgba(94, 76, 58, 0.16);
 }
 
 .btn--chip {
-  flex: 1 1 0;
-  padding: 7px 4px;
-  font-size: 12px;
-  background: #e7e0d7;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8b7d70;
+  font-size: 11.5px;
+  font-weight: 700;
+  box-shadow: none;
 }
 
 .btn--chip:hover:not(:disabled) {
-  background: #dcd3c8;
+  background: rgba(255, 255, 255, 0.55);
+  color: #5f5142;
 }
 
-.btn--toggle.is-active,
 .btn--chip.is-active {
-  background: #8f7a66;
-  color: #f9f6f2;
+  background: #fffdf8;
+  color: #55483b;
+  box-shadow:
+    0 1px 2px rgba(116, 97, 79, 0.2),
+    0 0 0 1px rgba(116, 97, 79, 0.08);
 }
 
-.btn--toggle.is-active:hover:not(:disabled),
 .btn--chip.is-active:hover:not(:disabled) {
-  background: #7f6a56;
+  background: #fffdf8;
+  color: #55483b;
 }
 
-#soundToggle {
-  flex: 0 0 auto;
-  padding: 7px 12px;
-  font-size: 12px;
+/* 音效开关横跨两列，右缘与分段控件对齐 */
+.btn--switch {
+  grid-column: 1 / -1;
+  height: 28px;
+  margin-top: 1px;
+  padding: 0 10px;
+  font-size: 11.5px;
 }
 
 /* ---------- 棋盘 ---------- */
+
+/*
+ * 棋盘是主舞台：底色比页面深一档，配一层外阴影把它从纸面上"抬"起来，
+ * 空格子用半透明浅色，让棋盘网格清晰可辨（问题 4）。
+ */
 .board {
   --size: 4;
   --pad: 12px;
@@ -275,8 +511,15 @@ body {
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: #bbada0;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(60, 45, 32, 0.06)),
+    var(--wood);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 0 0 1px rgba(84, 66, 50, 0.16),
+    0 22px 40px -26px rgba(74, 57, 42, 0.85),
+    0 2px 4px rgba(74, 57, 42, 0.06);
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -284,42 +527,83 @@ body {
 }
 
 .board:focus-visible {
-  box-shadow: 0 0 0 3px rgba(143, 122, 102, 0.38);
+  outline: 2px solid rgba(138, 118, 99, 0.6);
+  outline-offset: 3px;
 }
 
-/* 方向提示：整块棋盘上的一层方向光晕，不碰任何方块 */
-.board::after {
+/*
+ * 方向提示分两层，避免"整块蒙白把数字洗掉"：
+ *   ::after  棋盘表面的方向光，压在方块**下方**（z-index 0），只透过空格子发光；
+ *   ::before 贴着该方向边缘的一道细亮线，在方块之上，但只占内边距，碰不到数字。
+ */
+.board::after,
+.board::before {
   content: "";
   position: absolute;
   inset: 0;
-  z-index: 3;
   border-radius: inherit;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 180ms ease;
+  transition: opacity 170ms ease;
+}
+
+.board::after {
+  z-index: 0;
+}
+
+.board::before {
+  z-index: 2;
 }
 
 .board--hint-left::after,
 .board--hint-right::after,
 .board--hint-up::after,
-.board--hint-down::after {
+.board--hint-down::after,
+.board--hint-left::before,
+.board--hint-right::before,
+.board--hint-up::before,
+.board--hint-down::before {
   opacity: 1;
 }
 
 .board--hint-left::after {
-  background: linear-gradient(to right, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+  background: linear-gradient(to right, rgba(255, 244, 226, 0.55), rgba(255, 244, 226, 0) 58%);
 }
 
 .board--hint-right::after {
-  background: linear-gradient(to left, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+  background: linear-gradient(to left, rgba(255, 244, 226, 0.55), rgba(255, 244, 226, 0) 58%);
 }
 
 .board--hint-up::after {
-  background: linear-gradient(to bottom, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+  background: linear-gradient(to bottom, rgba(255, 244, 226, 0.55), rgba(255, 244, 226, 0) 58%);
 }
 
 .board--hint-down::after {
-  background: linear-gradient(to top, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+  background: linear-gradient(to top, rgba(255, 244, 226, 0.55), rgba(255, 244, 226, 0) 58%);
+}
+
+.board--hint-left::before {
+  box-shadow:
+    inset 6px 0 0 rgba(255, 250, 240, 0.92),
+    inset 26px 0 22px -18px rgba(255, 248, 235, 0.9);
+}
+
+.board--hint-right::before {
+  box-shadow:
+    inset -6px 0 0 rgba(255, 250, 240, 0.92),
+    inset -26px 0 22px -18px rgba(255, 248, 235, 0.9);
+}
+
+.board--hint-up::before {
+  box-shadow:
+    inset 0 6px 0 rgba(255, 250, 240, 0.92),
+    inset 0 26px 22px -18px rgba(255, 248, 235, 0.9);
+}
+
+.board--hint-down::before {
+  box-shadow:
+    inset 0 -6px 0 rgba(255, 250, 240, 0.92),
+    inset 0 -26px 22px -18px rgba(255, 248, 235, 0.9);
 }
 
 .grid-layer {
@@ -333,24 +617,68 @@ body {
 }
 
 .grid-cell {
-  background: rgba(238, 228, 218, 0.35);
+  background: rgba(250, 244, 234, 0.3);
   border-radius: var(--radius);
+  box-shadow: inset 0 1px 2px rgba(74, 57, 42, 0.1);
 }
 
 .tile-layer {
   position: absolute;
   inset: 0;
+  /* 压在方向提示的洗光之上，否则提示时数字会被一起洗白 */
+  z-index: 1;
 }
 
-/* 障碍：按 tile 的定位方式摆放，但没有内层方块，底色直接画在外层上 */
+/* ---------- 障碍 ---------- */
+
+/*
+ * 障碍不是"另一种方块"，而是钉死在棋盘上的障碍物：
+ * 低饱和深色 + 斜纹，和所有暖色方块在明度、质感上都不同类。
+ * 斜纹宽度跟随格子尺寸，6×6 下不会糊成一片。
+ */
 .tile--obstacle {
-  background: #9b8b7e;
   border-radius: var(--radius);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(0, 0, 0, 0.12) 0,
+      rgba(0, 0, 0, 0.12) calc(var(--cell) * 0.075),
+      rgba(0, 0, 0, 0) calc(var(--cell) * 0.075),
+      rgba(0, 0, 0, 0) calc(var(--cell) * 0.15)
+    ),
+    linear-gradient(160deg, #6f6a62, #55504a);
   box-shadow:
-    inset 0 -3px 0 rgba(0, 0, 0, 0.18),
-    inset 0 3px 0 rgba(255, 255, 255, 0.12);
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.22),
+    0 2px 3px rgba(60, 45, 32, 0.28);
   pointer-events: none;
 }
+
+/* 新长出来的障碍淡入；老障碍整盘重绘时保持静止 */
+.tile--obstacle.is-new {
+  animation: obstacle-in 240ms var(--ease-out) both;
+}
+
+@keyframes obstacle-in {
+  0% {
+    opacity: 0;
+    transform: translate(
+        calc(var(--x, 0) * (var(--cell) + var(--gap))),
+        calc(var(--y, 0) * (var(--cell) + var(--gap)))
+      )
+      scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(
+      calc(var(--x, 0) * (var(--cell) + var(--gap))),
+      calc(var(--y, 0) * (var(--cell) + var(--gap)))
+    );
+  }
+}
+
+/* ---------- 方块 ---------- */
 
 /* 外层只负责位移，内层负责缩放和弹出，两者互不干扰 */
 .tile {
@@ -363,6 +691,7 @@ body {
     calc(var(--x, 0) * (var(--cell) + var(--gap))),
     calc(var(--y, 0) * (var(--cell) + var(--gap)))
   );
+  /* 必须与 renderer.js 的 SLIDE_MS 一致 */
   transition: transform 110ms ease-in-out;
   will-change: transform;
 }
@@ -372,24 +701,38 @@ body {
   place-items: center;
   width: 100%;
   height: 100%;
+  padding: 0 3px;
   border-radius: var(--radius);
   background: var(--tile-bg, #eee4da);
   color: var(--tile-fg, #776e65);
-  font-size: calc(var(--cell) * 0.44);
+  /* 字号按格子边长推导：三档尺寸、任意窗口宽度都等比收缩 */
+  font-size: calc(var(--cell) * 0.45);
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.035em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.045);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.06);
   will-change: transform, opacity;
 }
 
+.tile__value {
+  display: block;
+  max-width: 100%;
+}
+
+/* 位数越多字号越小；最紧的一档是 6×6 的 5 位数（如 16384） */
+.tile__inner.len2 {
+  font-size: calc(var(--cell) * 0.45);
+}
+
 .tile__inner.len3 {
-  font-size: calc(var(--cell) * 0.36);
+  font-size: calc(var(--cell) * 0.35);
 }
 
 .tile__inner.len4 {
-  font-size: calc(var(--cell) * 0.29);
+  font-size: calc(var(--cell) * 0.27);
 }
 
 .tile__inner[data-value="2"] {
@@ -404,53 +747,79 @@ body {
 
 .tile__inner[data-value="8"] {
   --tile-bg: #f2b179;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="16"] {
   --tile-bg: #f59563;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="32"] {
   --tile-bg: #f67c5f;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="64"] {
   --tile-bg: #f65e3b;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="128"] {
   --tile-bg: #edcf72;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="256"] {
   --tile-bg: #edcc61;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="512"] {
   --tile-bg: #edc850;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="1024"] {
   --tile-bg: #edc53f;
-  --tile-fg: #f9f6f2;
+  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="2048"] {
   --tile-bg: #edc22e;
-  --tile-fg: #f9f6f2;
-  box-shadow: 0 0 24px rgba(243, 215, 116, 0.72), inset 0 -2px 0 rgba(0, 0, 0, 0.045);
+  --tile-fg: #fdf9f2;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.06),
+    0 0 22px rgba(243, 215, 116, 0.66);
 }
 
+/* 超过本尺寸目标的方块：深炭色 + 金线，明确"已经超额" */
 .tile__inner.is-super {
-  --tile-bg: #3c3a32;
-  --tile-fg: #f9f6f2;
+  --tile-bg: #3f3b33;
+  --tile-fg: #f7f2e6;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(237, 194, 46, 0.38);
+}
+
+/* 提示高亮（当前渲染层走棋盘方向光晕，这条留给单块高亮接口） */
+.tile.is-hint .tile__inner {
+  animation: tile-hint 700ms ease-in-out infinite;
+}
+
+@keyframes tile-hint {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.06);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 0 0 3px rgba(255, 246, 230, 0.9);
+  }
 }
 
 /* 新方块弹出 */
@@ -458,7 +827,7 @@ body {
   animation: tile-appear 150ms ease-out both;
 }
 
-/* 合成块：滑动结束后才出现，先缩小淡入再回弹到原尺寸 */
+/* 合成块：滑动结束后才出现，先缩小淡入再回弹到原尺寸（175ms 与 renderer 一致） */
 .tile__inner.anim-merge {
   animation: tile-merge 175ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
 }
@@ -490,6 +859,7 @@ body {
 }
 
 /* ---------- 结算浮层 ---------- */
+
 .overlay {
   position: absolute;
   inset: 0;
@@ -497,12 +867,12 @@ body {
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 6px;
-  padding: 24px;
-  border-radius: 12px;
-  background: rgba(250, 248, 239, 0.84);
-  backdrop-filter: blur(2px);
-  animation: overlay-in 200ms ease-out both;
+  gap: 4px;
+  padding: 22px;
+  border-radius: inherit;
+  background: rgba(250, 245, 236, 0.93);
+  backdrop-filter: blur(5px) saturate(1.05);
+  animation: overlay-in 180ms ease-out both;
   text-align: center;
 }
 
@@ -521,26 +891,26 @@ body {
 
 .overlay-title {
   margin: 0;
-  font-size: 32px;
+  font-size: 30px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  color: #6f655c;
+  color: #5f554b;
 }
 
 .overlay.is-win .overlay-title {
-  color: #d99c22;
+  color: #bd8a1c;
 }
 
 .overlay.is-lose .overlay-title {
-  color: #8f7a66;
+  color: #7a6b5c;
 }
 
 .overlay-text {
-  margin: 2px 0 14px;
-  max-width: 22em;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #9a8d81;
+  margin: 2px 0 16px;
+  max-width: 20em;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #8c7f72;
 }
 
 .overlay-actions {
@@ -552,52 +922,103 @@ body {
 
 .overlay-actions .btn {
   flex: none;
-  min-width: 104px;
-  padding: 10px 18px;
+  min-width: 100px;
+  height: 36px;
+  padding: 0 18px;
+  font-size: 13px;
 }
 
 /* ---------- 页脚 ---------- */
+
 .footer {
-  margin-top: 12px;
-  min-height: 18px;
-  font-size: 12px;
-  color: #b0a396;
+  margin-top: 10px;
+  min-height: 15px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-faint);
   text-align: center;
 }
 
-/* ---------- 适配 ---------- */
-@media (max-height: 720px) {
+/* ---------- 矮窗口：压缩固定开销，把高度让给棋盘 ---------- */
+
+@media (max-height: 780px) {
   body {
-    padding: 14px 20px;
+    padding: 16px 16px 12px;
   }
 
   .brand h1 {
-    font-size: 36px;
+    font-size: 34px;
   }
 
-  .hint {
-    margin-top: 6px;
-    font-size: 11px;
+  .header {
+    margin-bottom: 8px;
   }
 
-  .toolbar {
-    margin: 10px 0 10px;
+  .hud-item {
+    padding: 5px 3px 6px;
   }
 
-  .app {
-    width: min(92vw, 404px);
+  .hud-value,
+  .hud-timer {
+    font-size: 15px;
+  }
+
+  .settings {
+    gap: 6px 10px;
+    padding: 7px 9px 8px;
+  }
+
+  .btn--chip {
+    height: 22px;
+  }
+
+  .footer {
+    margin-top: 8px;
   }
 }
 
+@media (max-height: 660px) {
+  .brand h1 {
+    font-size: 30px;
+  }
+
+  .hint {
+    font-size: 10.5px;
+  }
+
+  .btn {
+    height: 30px;
+    font-size: 12px;
+  }
+
+  .btn--switch {
+    height: 26px;
+  }
+}
+
+/* ---------- 降低动态效果 ---------- */
+
 @media (prefers-reduced-motion: reduce) {
+  /* 滑动本身是一段位移，直接取消过渡：方块瞬间到新位置 */
   .tile {
     transition: none;
   }
 
   .tile__inner.anim-appear,
   .tile__inner.anim-merge,
+  .tile--obstacle.is-new,
   .overlay,
-  .score-gain.is-shown {
+  .hud-gain.is-shown,
+  .hud-timer.is-urgent::after,
+  #autoplay.is-active::before,
+  .tile.is-hint .tile__inner {
     animation-duration: 1ms;
+    animation-iteration-count: 1;
+  }
+
+  .board::after,
+  .board::before,
+  .btn {
+    transition: none;
   }
 }
