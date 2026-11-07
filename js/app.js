@@ -24,6 +24,7 @@
   var Audio = global.Game2048Audio;
   var Rng = global.Game2048Rng;
   var Daily = global.Game2048Daily;
+  var Review = global.Game2048Review;
 
   /* ---------- 常量 ---------- */
 
@@ -45,6 +46,14 @@
   var TICK_MS = 200;
   /** 跨日检查间隔：页面一直开着也要能在午夜后放弃旧的每日身份 */
   var DAILY_CHECK_MS = 60000;
+  /** 复盘异步评分：单步给 AI 的时间预算（必须在空闲回调里跑，不能拖慢走子） */
+  var EVAL_BUDGET_MS = 24;
+  /** 复盘评分队列上限：积压太多时丢最旧的，宁可少评几步也不无限占内存 */
+  var EVAL_QUEUE_LIMIT = 32;
+  /** requestIdleCallback 的兜底超时：一直没空闲也必须找机会算 */
+  var EVAL_IDLE_TIMEOUT_MS = 400;
+  /** 结算时同步补算剩余评分的总预算 */
+  var FLUSH_BUDGET_MS = 60;
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -96,7 +105,11 @@
     dailyDate: document.getElementById('dailyDate'),
     dailyMeta: document.getElementById('dailyMeta'),
     dailyStart: document.getElementById('dailyStart'),
-    dailyChallenge: document.getElementById('dailyChallenge')
+    dailyChallenge: document.getElementById('dailyChallenge'),
+    reviewOpen: document.getElementById('reviewOpen'),
+    reviewSheet: document.getElementById('reviewSheet'),
+    reviewClose: document.getElementById('reviewClose'),
+    reviewBody: document.getElementById('reviewBody')
   };
 
   var renderer = Renderer.create({
@@ -169,7 +182,9 @@
     /** 本局已计入每日 totalMoves 的步数；继续挑战后只补记增量 */
     dailyRecordedMoves: 0,
     /** 本局是否用过撤销（结果类成就用，暂不落盘） */
-    undoUsed: false
+    undoUsed: false,
+    /** 本局复盘日志（每日局才建；普通局为 null） */
+    reviewLog: null
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -181,6 +196,17 @@
 
   /** 动画期间缓冲的玩家方向：最多一格，只保留最后一次按键（不进撤销语义） */
   var pendingDir = null;
+
+  /* ---------- 复盘评分队列（挂在空闲回调上，绝不在走子路径里算 AI） ---------- */
+
+  /** 待评分记录：{ entry }，entry 是 reviewLog.moves 里的同一对象，算完直接写回 */
+  var evalQueue = [];
+  /** 空闲/延时回调句柄；null 表示没有在途任务 */
+  var evalTimer = null;
+  /** 句柄是 requestIdleCallback 还是 setTimeout，取消时要用对 API */
+  var evalTimerIsIdle = false;
+  /** 打开复盘抽屉前的焦点，关闭时归还 */
+  var reviewReturnFocus = null;
 
   /* ---------- 小工具 ---------- */
 
@@ -204,9 +230,9 @@
     if (els.status) els.status.textContent = text;
   }
 
-  /** 动画中、结算浮层挡住棋盘、或这一局已经结束时，都不接受新输入 */
+  /** 动画中、结算浮层挡住棋盘、复盘抽屉开着、或这一局已经结束时，都不接受新输入 */
   function isLocked() {
-    return state.over || state.busy || !els.overlay.hidden;
+    return state.over || state.busy || !els.overlay.hidden || isReviewOpen();
   }
 
   /** 毫秒 -> mm:ss（向上取整，这样 180000 显示 03:00 而不是 02:59） */
@@ -318,11 +344,358 @@
       state.rngCount = 0;
       state.dailyRecorded = false;
       state.dailyRecordedMoves = 0;
+      resetReviewLog(null);   // 跨日后这一局不再属于今天的挑战，复盘也不该落盘
       setStatus('新的一天 · 今日挑战已刷新');
       saveState();
     }
 
     renderDailyBar();
+  }
+
+  /* ---------- 复盘 ---------- */
+
+  /**
+   * 给一步补算 AI 分数并写回 entry。
+   * 只在空闲回调 / 结算补算里调用 —— applyMove 的同步路径里绝不能出现 AI.suggest。
+   */
+  function processEvalEntry(item) {
+    if (!item || !item.entry) return;
+
+    var entry = item.entry;
+    if (entry.b !== null) return;   // 已经算过，避免重复搜索
+
+    var values = Array.isArray(entry.v) ? entry.v : [];
+    if (!values.length) return;
+
+    var move = AI.suggest(G.boardFromValues(values), { timeBudgetMs: EVAL_BUDGET_MS });
+    if (!move || !move.scores) return;
+
+    entry.b = move.dir;
+    entry.s = move.score;
+
+    var actual = move.scores[entry.d];
+    entry.t = typeof actual === 'number' && isFinite(actual) ? actual : null;
+  }
+
+  /** 一次空闲回调只处理 1 条，剩下的再排下一次，避免一次性占满主线程 */
+  function runEval() {
+    evalTimer = null;
+    evalTimerIsIdle = false;
+    if (!evalQueue.length) return;
+
+    processEvalEntry(evalQueue.shift());
+    if (evalQueue.length) scheduleEval();
+  }
+
+  function scheduleEval() {
+    if (evalTimer !== null || !evalQueue.length) return;
+
+    if (typeof global.requestIdleCallback === 'function') {
+      evalTimerIsIdle = true;
+      evalTimer = global.requestIdleCallback(runEval, { timeout: EVAL_IDLE_TIMEOUT_MS });
+    } else {
+      evalTimerIsIdle = false;
+      evalTimer = global.setTimeout(runEval, 0);
+    }
+  }
+
+  function clearEvalTimer() {
+    if (evalTimer === null) return;
+
+    if (evalTimerIsIdle && typeof global.cancelIdleCallback === 'function') {
+      global.cancelIdleCallback(evalTimer);
+    } else {
+      global.clearTimeout(evalTimer);
+    }
+    evalTimer = null;
+    evalTimerIsIdle = false;
+  }
+
+  /**
+   * 换局时重置复盘：每日局建一份空日志，普通局置 null。
+   * 队列与在途回调一起清掉，免得上一步的评分写进新一局。
+   */
+  function resetReviewLog(dateKey) {
+    clearEvalTimer();
+    evalQueue.length = 0;
+    state.reviewLog = dateKey ? Review.emptyLog(dateKey) : null;
+  }
+
+  /**
+   * 走子成功后追加一条复盘记录，并把这一步排进评分队列。
+   * 只做 push 和排期，不做任何搜索 —— 连续快速按键时不会有额外卡顿。
+   */
+  function enqueueReviewMove(dir, valuesBefore, gained) {
+    if (!state.reviewLog) return;
+
+    state.reviewLog = Review.appendMove(state.reviewLog, {
+      d: dir,
+      v: valuesBefore,
+      g: gained,
+      b: null,
+      s: null,
+      t: null
+    });
+
+    evalQueue.push({ entry: state.reviewLog.moves[state.reviewLog.moves.length - 1] });
+    while (evalQueue.length > EVAL_QUEUE_LIMIT) evalQueue.shift();
+    scheduleEval();
+  }
+
+  /** 同步补算队列里剩下的评分；预算用完就停，宁可少评几步也不卡住结算 */
+  function flushEvalQueue(options) {
+    var budget = options && typeof options.budgetMs === 'number' ? options.budgetMs : FLUSH_BUDGET_MS;
+    if (budget < 0) budget = 0;
+
+    clearEvalTimer();
+    var deadline = Date.now() + budget;
+    while (evalQueue.length && Date.now() < deadline) {
+      processEvalEntry(evalQueue.shift());
+    }
+  }
+
+  /**
+   * 结算时落盘复盘：补算剩余评分 -> 汇总 -> 写入 review.<dateKey>。
+   * 只在「今天的每日局」结算时做一次；写盘后清空内存日志，避免重复写。
+   */
+  function finalizeReview() {
+    if (!state.reviewLog) return;
+    if (!state.dailyKey || state.dailyKey !== todayKey()) return;
+
+    var meta = {
+      score: state.score,
+      moves: state.moves,
+      maxTile: G.maxValue(state.board),
+      won: state.won
+    };
+
+    flushEvalQueue({ budgetMs: FLUSH_BUDGET_MS });
+    evalQueue.length = 0;   // 预算内没算完的宁可丢掉，也不让回调在结算后继续跑
+
+    Storage.set(Storage.KEYS.review + '.' + state.dailyKey, {
+      version: state.reviewLog.version,
+      date: state.reviewLog.date,
+      moves: state.reviewLog.moves,
+      summary: Review.summarize(state.reviewLog, meta),
+      // meta 不属于 summarize 的返回值，但刷新后要还原指标行，跟着日志一起存
+      meta: meta
+    });
+
+    state.reviewLog = null;
+  }
+
+  /** 非负整数，用于把存档里的脏数据折成 0 */
+  function countOf(value) {
+    var number = Number(value);
+    if (!isFinite(number) || number <= 0) return 0;
+    return Math.floor(number);
+  }
+
+  /** 推理复盘用的本局指标：优先内存局，其次落盘日志，最后退回当日战绩 */
+  function reviewMetaOf(live, stored, record) {
+    if (live) {
+      return {
+        score: state.score,
+        moves: state.moves,
+        maxTile: G.maxValue(state.board),
+        won: state.won
+      };
+    }
+
+    var saved = stored && stored.meta;
+    if (saved && typeof saved === 'object') {
+      return {
+        score: countOf(saved.score),
+        moves: countOf(saved.moves),
+        maxTile: countOf(saved.maxTile),
+        won: saved.won === true
+      };
+    }
+
+    return {
+      score: record ? record.bestScore : 0,
+      moves: record ? record.bestMoves : 0,
+      maxTile: record ? record.bestTile : 0,
+      won: record ? record.won : false
+    };
+  }
+
+  /** analysis 里只会有本模块生成的数字与中文，仍然统一转义，防止以后接用户输入 */
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function metricHtml(label, value) {
+    return '<div class="metric">' +
+      '<span class="metric__label">' + escapeHtml(label) + '</span>' +
+      '<span class="metric__value">' + escapeHtml(value) + '</span>' +
+      '</div>';
+  }
+
+  /** 一条关键失误：左边 4×4 迷你盘面，右边两行文字 */
+  function blunderHtml(item) {
+    var rows = Array.isArray(item.values) ? item.values : [];
+    var cells = [];
+
+    for (var r = 0; r < rows.length; r++) {
+      var row = Array.isArray(rows[r]) ? rows[r] : [];
+      for (var c = 0; c < row.length; c++) {
+        var value = row[c];
+        var color = Review.colorFor(value);
+        cells.push(
+          '<span class="mini-cell" style="background:' + color.background +
+          ';color:' + color.color + '">' + (value > 0 ? value : '') + '</span>'
+        );
+      }
+    }
+
+    var dirLabel = Review.DIR_LABEL[item.dir] || '';
+    var bestLabel = Review.DIR_LABEL[item.bestDir] || '';
+
+    return '<div class="blunder">' +
+      '<div class="mini-grid" aria-hidden="true">' + cells.join('') + '</div>' +
+      '<div class="blunder__text">' +
+        '<p class="blunder__title">第 ' + item.index + ' 步 ' + escapeHtml(dirLabel) + '</p>' +
+        '<p class="blunder__sub">AI 建议 ' + escapeHtml(bestLabel) +
+          ' · 亏 ' + item.delta.toFixed(1) + '</p>' +
+      '</div>' +
+    '</div>';
+  }
+
+  /**
+   * 渲染复盘正文。
+   * @param {object} log 日志
+   * @param {object} summary summarize 结果
+   * @param {{headline:string, paragraphs:Array, tips:Array}} analysis 文案
+   * @param {object} ctx analyze 的输入上下文（这里只用到指标行）
+   */
+  function renderReview(log, summary, analysis, ctx) {
+    if (!els.reviewBody) return;
+
+    var parts = [];
+    parts.push('<p class="review-headline">' + escapeHtml(analysis.headline) + '</p>');
+
+    parts.push('<div class="metrics">');
+    parts.push(metricHtml('分数', formatNumber(ctx.score)));
+    parts.push(metricHtml('一致性', summary.scored > 0 ? Math.round(summary.consistency * 100) + '%' : '—'));
+    parts.push(metricHtml('平均让子', summary.scored > 0 ? summary.avgLoss.toFixed(2) : '—'));
+    parts.push(metricHtml('评级', summary.scored > 0 ? summary.grade : '—'));
+    parts.push('</div>');
+
+    if (summary.worst.length) {
+      parts.push('<h3 class="review-sub">关键失误</h3>');
+      var limit = Math.min(3, summary.worst.length);
+      for (var i = 0; i < limit; i++) parts.push(blunderHtml(summary.worst[i]));
+    }
+
+    parts.push('<h3 class="review-sub">分析</h3>');
+    for (var p = 0; p < analysis.paragraphs.length; p++) {
+      parts.push('<p class="review-p">' + escapeHtml(analysis.paragraphs[p]) + '</p>');
+    }
+
+    parts.push('<h3 class="review-sub">建议</h3>');
+    parts.push('<ul class="review-tips">');
+    for (var t = 0; t < analysis.tips.length; t++) {
+      parts.push('<li>' + escapeHtml(analysis.tips[t]) + '</li>');
+    }
+    parts.push('</ul>');
+
+    els.reviewBody.innerHTML = parts.join('');
+  }
+
+  /** 空状态：今天还没打每日挑战 */
+  function renderReviewEmpty() {
+    if (!els.reviewBody) return;
+
+    els.reviewBody.innerHTML = '<div class="review-empty">' +
+      '<p class="review-empty__text">今天还没打每日挑战</p>' +
+      '<button class="btn btn--primary" id="reviewGoDaily" type="button">去挑战</button>' +
+    '</div>';
+
+    var go = document.getElementById('reviewGoDaily');
+    if (go) {
+      go.addEventListener('click', function () {
+        closeReview();
+        startDaily();
+      });
+    }
+  }
+
+  /** 取今天该显示的复盘：内存里的进行中日志优先，其次落盘的那份 */
+  function renderReviewSheet() {
+    if (!els.reviewBody) return;
+
+    var key = todayKey();
+    var live = state.reviewLog && state.reviewLog.date === key ? state.reviewLog : null;
+    var stored = Storage.get(Storage.KEYS.review + '.' + key, null);
+    var log = live || (stored && typeof stored === 'object' ? stored : null);
+
+    var store = loadDailyStore();
+    var record = Daily.bestOf(store, key);
+    var meta = reviewMetaOf(live, stored, record);
+
+    if (!log || !Array.isArray(log.moves) || !log.moves.length) {
+      renderReviewEmpty();
+      return;
+    }
+
+    var summary = log.summary && !live ? log.summary : Review.summarize(log, meta);
+
+    // 近 7 日按「不含今天」算：recent 取 8 天，丢掉末位今天
+    var history = [];
+    var recentDays = Daily.recent(store, key, 8);
+    for (var i = 0; i < recentDays.length - 1; i++) {
+      history.push({ date: recentDays[i].date, bestScore: recentDays[i].bestScore });
+    }
+
+    var streak = Daily.streakOf(store, key);
+    var ctx = {
+      dateLabel: Rng.dateLabel(key),
+      score: meta.score,
+      maxTile: meta.maxTile,
+      moves: meta.moves,
+      history: history,
+      streak: streak.current,
+      bestToday: record ? record.bestScore : 0
+    };
+
+    renderReview(log, summary, Review.analyze(summary, ctx), ctx);
+  }
+
+  function openReview() {
+    if (!els.reviewSheet) return;
+
+    reviewReturnFocus = document.activeElement;
+    renderReviewSheet();
+    els.reviewSheet.hidden = false;
+    document.body.classList.add('is-sheet-open');
+    if (els.reviewClose) els.reviewClose.focus();
+  }
+
+  function closeReview() {
+    if (!els.reviewSheet || els.reviewSheet.hidden) return;
+
+    els.reviewSheet.hidden = true;
+    document.body.classList.remove('is-sheet-open');
+
+    var target = reviewReturnFocus;
+    reviewReturnFocus = null;
+    // 鼠标点开的按钮通常不是 activeElement（浏览器差异），这种情况直接还给复盘入口
+    if (target && target !== document.body && typeof target.focus === 'function' &&
+        document.contains(target)) {
+      target.focus();
+    } else if (els.reviewOpen) {
+      els.reviewOpen.focus();
+    }
+  }
+
+  /** 复盘抽屉是否开着；开着时锁住棋盘输入与托管 */
+  function isReviewOpen() {
+    return !!els.reviewSheet && els.reviewSheet.hidden === false;
   }
 
   /* ---------- 渲染 ---------- */
@@ -614,6 +987,8 @@
       state.dailyRng = null;
       state.rngCount = 0;
     }
+    // 每日局从空日志开始记；普通局直接置空，避免把上一局的复盘带进来
+    resetReviewLog(state.dailyKey);
     pendingDir = null;
     state.remainingMs = MODES[settings.mode].timeLimitMs;
     state.obstaclesAdded = MODES[settings.mode].obstacles;
@@ -656,6 +1031,7 @@
     stopCountdown();
     disableAutoplay();
     recordGame();
+    finalizeReview();   // 每日局结算时补算评分并落盘（内部自带条件与幂等）
     renderHud();
 
     if (reason === 'win') {
@@ -755,6 +1131,8 @@
     if (!result.changed) return false;   // 这个方向推不动，不消耗步数、不留快照
 
     var session = state.session;
+    // 复盘要的是「这一步之前」的盘面，必须赶在接管 result.board 之前取
+    var valuesBefore = G.toValues(state.board);
 
     pushHistory();
 
@@ -762,6 +1140,8 @@
     state.board = result.board;    // computeMove 的结果只能消费一次，直接接管
     var spawned = G.spawnRandom(state.board, nextRandom);
     state.moves += 1;
+
+    enqueueReviewMove(dir, valuesBefore, result.gained);
 
     if (result.gained) addScore(result.gained);
     renderHud();
@@ -1141,6 +1521,16 @@
     if (event.isComposing) return;
 
     var key = (event.key || '').toLowerCase();
+
+    // 复盘抽屉开着时只认 Esc：方向键、R、撤销都等关掉之后再起作用
+    if (isReviewOpen()) {
+      if (key === 'escape') {
+        event.preventDefault();
+        closeReview();
+      }
+      return;
+    }
+
     var withModifier = event.ctrlKey || event.metaKey;
 
     if (withModifier && key === 'z') {
@@ -1209,9 +1599,18 @@
     if (els.openSettings) els.openSettings.addEventListener('click', toggleSettingsPanel);
     if (els.soundToggle) els.soundToggle.addEventListener('click', toggleSound);
 
-    // 每日条里的按钮与第二排入口都进同一条路径（reviewOpen / achOpen 由后续任务接）
+    // 每日条里的按钮与第二排入口都进同一条路径（achOpen 由后续任务接）
     if (els.dailyStart) els.dailyStart.addEventListener('click', startDaily);
     if (els.dailyChallenge) els.dailyChallenge.addEventListener('click', startDaily);
+
+    if (els.reviewOpen) els.reviewOpen.addEventListener('click', openReview);
+    if (els.reviewClose) els.reviewClose.addEventListener('click', closeReview);
+    if (els.reviewSheet) {
+      els.reviewSheet.addEventListener('click', function (event) {
+        // 点在遮罩（面板之外）才关，点面板内部不冒泡误关
+        if (event.target === els.reviewSheet) closeReview();
+      });
+    }
 
     bindChoiceGroup(els.sizeGroup, 'size', setSize);
     bindChoiceGroup(els.modeGroup, 'mode', setMode);
@@ -1275,6 +1674,8 @@
             state.dailyRecorded = saved.dailyRecorded;
             state.dailyRecordedMoves = saved.dailyRecordedMoves;
             restoreDailyRng();
+            // 刷新后续玩的这几步照常进复盘；刷新前的盘面日志不落盘，只能从零记
+            resetReviewLog(saved.daily);
           } else {
             // 跨日：盘面照常恢复，只是不再属于今天的挑战
             dailyExpired = true;

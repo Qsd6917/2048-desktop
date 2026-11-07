@@ -16,12 +16,16 @@
   /** 存档命名空间：旧版键不再读取 */
   var PREFIX = 'game2048.v2.';
 
-  /** 控制器使用的四个键（不含前缀，写盘后是 game2048.v2.state 等） */
+  /** 控制器使用的固定键（不含前缀，写盘后是 game2048.v2.state 等） */
   var KEYS = {
     state: 'state',
     stats: 'stats',
     settings: 'settings',
-    daily: 'daily'
+    daily: 'daily',
+    // 复盘按天存：实际键名是 review.<YYYYMMDD>，拼在 review 后面
+    review: 'review',
+    // 成就 / 档案（Task 4 用）
+    profile: 'profile'
   };
 
   /** 统计的默认形状；每次返回都是新对象，调用方随便改 */
