@@ -617,6 +617,75 @@ async function main() {
   check('媒体模拟已撤销',
     (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === false);
 
+  /* ---------- T11 成就系统 ---------- */
+  console.log('\n[T11] 成就：计数、面板与提示条');
+
+  await evalJs('Game2048Storage.remove(Game2048Storage.KEYS.profile), 1');
+  await reload();
+  check('清空档案后首次进入是 0/25', (await text('#achOpen')) === '成就 0/25',
+    await text('#achOpen'));
+
+  await loadBoard(BOARD_WIN_IN_ONE, 'timed');
+  await press('ArrowLeft');
+  await wait(700);
+
+  const achProfile = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  const unlockedIds = achProfile ? Object.keys(achProfile.unlocked) : [];
+  check('成就档案已落盘', Boolean(achProfile) && achProfile.version === 1,
+    JSON.stringify(achProfile && achProfile.stats));
+  check('一局后 games 记了 1', Boolean(achProfile) && achProfile.stats.games === 1,
+    achProfile && String(achProfile.stats.games));
+  check('达成目标解锁 first_game', unlockedIds.indexOf('first_game') >= 0, unlockedIds.join(','));
+  check('2048 解锁 tile_2048', unlockedIds.indexOf('tile_2048') >= 0, unlockedIds.join(','));
+  check('解锁时间戳是正整数',
+    Boolean(achProfile) && typeof achProfile.unlocked.first_game === 'number' &&
+      achProfile.unlocked.first_game > 0,
+    achProfile && String(achProfile.unlocked.first_game));
+
+  const achLabel = await text('#achOpen');
+  const achMatch = /^成就 (\d+)\/25$/.exec(achLabel || '');
+  check('成就按钮显示 x/25 且与档案一致',
+    Boolean(achMatch) && Number(achMatch[1]) === unlockedIds.length,
+    achLabel + ' / unlocked=' + unlockedIds.length);
+
+  const toastCount = await evalJs('document.querySelectorAll("#achToasts .toast").length');
+  check('解锁时右下角出现提示条', toastCount >= 1, 'toasts=' + toastCount);
+  check('提示条同屏最多 3 条', toastCount <= 3, 'toasts=' + toastCount);
+
+  await evalJs('document.getElementById("achOpen").focus(), 1');
+  await click('#achOpen');
+  await wait(180);
+  check('成就面板打开', (await evalJs('document.getElementById("achSheet").hidden')) === false);
+  check('面板里 25 张卡片',
+    (await evalJs('document.querySelectorAll("#achBody .ach-card").length')) === 25);
+
+  const unlockedCards = await evalJs('document.querySelectorAll("#achBody .ach-card.is-unlocked").length');
+  check('解锁卡片数与档案一致', unlockedCards === unlockedIds.length,
+    unlockedCards + ' vs ' + unlockedIds.length);
+
+  check('锁定卡片 aria-disabled 且仍可聚焦', await evalJs(`(function () {
+    var card = document.querySelector('#achBody .ach-card[aria-disabled="true"]');
+    return !!card && card.getAttribute('tabindex') === '0';
+  })()`));
+  check('锁定卡片带进度条', (await evalJs(
+    'document.querySelectorAll("#achBody .ach-card[aria-disabled=\\"true\\"] .ach-progress").length'
+  )) > 0);
+  check('解锁卡片显示解锁日期',
+    /^解锁于 \d{4}-\d{2}-\d{2}$/.test((await text('#achBody .ach-card.is-unlocked .ach-card__date')) || ''),
+    await text('#achBody .ach-card.is-unlocked .ach-card__date'));
+  check('顶部显示已解锁汇总',
+    ((await text('#achBody .ach-summary__count')) || '').indexOf('已解锁 ' + unlockedIds.length + ' / 25') === 0,
+    await text('#achBody .ach-summary__count'));
+
+  await press('Escape');
+  await wait(150);
+  check('Esc 关闭成就面板', (await evalJs('document.getElementById("achSheet").hidden')) === true);
+  check('关闭后焦点回到成就入口',
+    (await evalJs('document.activeElement && document.activeElement.id')) === 'achOpen',
+    await evalJs('document.activeElement && document.activeElement.id'));
+
   /* ---------- T10 控制台 ---------- */
   console.log('\n[T10] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
