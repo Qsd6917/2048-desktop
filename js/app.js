@@ -207,7 +207,10 @@
     var keys = Object.keys(stats.bySize || {});
     for (var i = 0; i < keys.length; i++) {
       var bucket = stats.bySize[keys[i]];
-      if (bucket && bucket.bestScore > 0) sizes[keys[i]] = 1;
+      if (!bucket) continue;
+      // 「玩过这个尺寸」有两种证据：打完过（games）或拿过分（bestScore）。
+      // 只看 bestScore 会漏掉开局就没合并、0 分收场的局。
+      if (bucket.games > 0 || bucket.bestScore > 0) sizes[keys[i]] = 1;
     }
 
     var seeded = Achievements.addStats(Achievements.emptyProfile(), {
@@ -1254,7 +1257,7 @@
     }
 
     // 老存档没有 undoUsed 字段：按「这一局没用过撤销」处理，与旧行为一致
-    var undoUsed = data.undoUsed === true;
+    var undoUsed = Boolean(data.undoUsed);
 
     return {
       size: size,
