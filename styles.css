@@ -75,6 +75,12 @@ body {
  *      内容从顶部开始排、页面正常滚动，不会被"居中"裁掉上边缘。
  */
 .app {
+  /*
+   * 粒子层是 fixed 的 40 层，这里把应用抬到 1 层并建立自己的层叠上下文：
+   * 棋盘、浮层、按钮都留在粒子之下，但粒子本身 pointer-events:none，交互不受影响。
+   */
+  position: relative;
+  z-index: 1;
   width: min(100%, 500px, max(280px, calc(100dvh - 396px)));
   margin-block: auto;
   display: flex;
@@ -1000,7 +1006,8 @@ body {
 .sheet {
   position: fixed;
   inset: 0;
-  z-index: 30;
+  /* 必须高于粒子层（40）：彩带可以飞过遮罩，但绝不能盖住复盘正文 */
+  z-index: 60;
   display: grid;
   place-items: center;
   padding: 20px;
@@ -1234,6 +1241,54 @@ body.is-sheet-open {
   text-align: center;
 }
 
+/* ---------- 全屏粒子层与震屏 ---------- */
+
+/*
+ * 粒子画布固定铺满视口：合并时的爆点要能飞出棋盘、一直飘到屏幕边缘，
+ * 所以它不能挂在棋盘内部（会被 overflow / 圆角裁掉）。
+ * pointer-events:none 保证它永远不会挡住点击；层级在应用（1）之上、抽屉（60）之下。
+ */
+#fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 40;
+  pointer-events: none;
+}
+
+/*
+ * 震屏：整块应用短促位移，粒子层不动 —— 视觉上像「屏幕抖了一下」，
+ * 但如果连画布一起抖，粒子会被撕出黑边。
+ * --shake 由 fx 写入（0.1~1），位移幅度按它缩放。
+ */
+.app.is-shaking {
+  animation: app-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes app-shake {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  15% {
+    transform: translate3d(calc(-7px * var(--shake, 0.5)), calc(4px * var(--shake, 0.5)), 0);
+  }
+
+  35% {
+    transform: translate3d(calc(6px * var(--shake, 0.5)), calc(-3px * var(--shake, 0.5)), 0);
+  }
+
+  55% {
+    transform: translate3d(calc(-4px * var(--shake, 0.5)), calc(-3px * var(--shake, 0.5)), 0);
+  }
+
+  75% {
+    transform: translate3d(calc(3px * var(--shake, 0.5)), calc(2px * var(--shake, 0.5)), 0);
+  }
+}
+
 /* ---------- 矮窗口：压缩固定开销，把高度让给棋盘 ---------- */
 
 @media (max-height: 780px) {
@@ -1315,5 +1370,10 @@ body.is-sheet-open {
   .board::before,
   .btn {
     transition: none;
+  }
+
+  /* 减少动态效果：震屏整段取消（粒子层本身在 fx.create 里已经是空操作） */
+  .app.is-shaking {
+    animation: none;
   }
 }
