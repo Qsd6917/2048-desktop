@@ -1286,8 +1286,131 @@ async function main() {
   const dailyMoves = await savedMoves();
   check('每日挑战没有被 AI 接管', dailyMoves === 0, 'moves=' + dailyMoves);
 
-  /* ---------- T21 控制台 ---------- */
-  console.log('\n[T21] 控制台');
+  /* ---------- T21 战报卡片 ---------- */
+  console.log('\n[T21] 结算战报与复盘入口');
+
+  await loadBoard(BOARD_WIN_IN_ONE, 'classic');
+  await press('ArrowLeft');
+  await wait(700);
+  check('达成目标浮层出现（战报前置条件）', (await overlayHidden()) === false);
+
+  const overlayLabels = JSON.parse(await evalJs(
+    'JSON.stringify(Array.prototype.map.call(document.querySelectorAll("#overlayActions button"),' +
+    ' function (btn) { return btn.textContent; }))'
+  ));
+  check('结算浮层有「保存战报」', overlayLabels.indexOf('保存战报') >= 0, overlayLabels.join(' / '));
+  check('「保存战报」排在既有按钮之后', overlayLabels[overlayLabels.length - 1] === '保存战报',
+    overlayLabels.join(' / '));
+
+  await evalJs(`(function () {
+    var buttons = document.querySelectorAll('#overlayActions button');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].textContent === '保存战报') { buttons[i].click(); return 1; }
+    }
+    return 0;
+  })()`);
+  await wait(700);
+  const saveStatus = await text('#status');
+  check('点击「保存战报」不写失败文案', saveStatus.indexOf('战报生成失败') < 0, saveStatus);
+  check('点击后状态行给出文件名', /战报已保存 · 2048-\d{8}-\d+\.png/.test(saveStatus || ''), saveStatus);
+
+  // 真实绘制：页面内走完整的 buildModel -> render -> toDataURL，再采样中心区域
+  const probe = JSON.parse(await evalJs(`(function () {
+    var model = Game2048Report.buildModel({
+      date: '2026-11-07', size: 4, score: 123456, maxTile: 1024, moves: 88,
+      mode: 'classic', daily: null, achievements: { unlocked: 3, total: 25 },
+      values: [
+        [1024, 1024, 64, 8],
+        [32, 128, 16, 4],
+        [8, 32, 2, 4],
+        [2, 4, 8, 16]
+      ]
+    });
+    var canvas = Game2048Report.render(model);
+    if (!canvas) return JSON.stringify({ ok: false });
+
+    var data = canvas.toDataURL('image/png');
+    var ctx = canvas.getContext('2d');
+    var pixels = ctx.getImageData(
+      Math.floor(canvas.width / 2) - 50,
+      Math.floor(canvas.height / 2) - 50,
+      100, 100
+    ).data;
+    var seen = {};
+    var colors = 0;
+    for (var i = 0; i < pixels.length; i += 4) {
+      var key = pixels[i] + ',' + pixels[i + 1] + ',' + pixels[i + 2];
+      if (!seen[key]) { seen[key] = 1; colors++; }
+    }
+    return JSON.stringify({
+      ok: true,
+      width: canvas.width,
+      height: canvas.height,
+      length: data.length,
+      colors: colors,
+      name: Game2048Report.fileName(model)
+    });
+  })()`));
+
+  check('render 返回 1440×1920 的 2 倍图', probe.ok === true && probe.width === 1440 &&
+    probe.height === 1920, probe.width + '×' + probe.height);
+  check('toDataURL 长度 > 5000（真的画了内容）', probe.length > 5000, 'len=' + probe.length);
+  check('中心 100×100 区域不是纯色', probe.colors > 1, probe.colors + ' 种颜色');
+  check('文件名符合 2048-YYYYMMDD-<score>.png', probe.name === '2048-20261107-123456.png', probe.name);
+
+  // 关掉结算浮层，进入复盘入口的两种状态
+  await evalJs(`(function () {
+    var buttons = document.querySelectorAll('#overlayActions button');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].textContent === '再来一局') { buttons[i].click(); return 1; }
+    }
+    return 0;
+  })()`);
+  await wait(400);
+  check('点「再来一局」后浮层关闭', (await overlayHidden()) === true);
+
+  await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    Game2048Storage.remove(Game2048Storage.KEYS.review + '.' + key);
+    return 1;
+  })()`);
+  await click('#reviewOpen');
+  await wait(300);
+  check('今天没有落盘日志时不渲染导出按钮',
+    (await evalJs('!!document.getElementById("reviewReport")')) === false);
+  await press('Escape');
+  await wait(200);
+
+  await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    Game2048Storage.set(Game2048Storage.KEYS.review + '.' + key, {
+      version: 1,
+      date: key,
+      moves: [{
+        d: 'left',
+        v: [[2, 2, 4, 8], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+        g: 4, b: null, s: null, t: null
+      }],
+      summary: null,
+      meta: { score: 1024, moves: 12, maxTile: 4, won: false }
+    });
+    return 1;
+  })()`);
+  await click('#reviewOpen');
+  await wait(300);
+  check('有落盘日志时出现「导出今日战报」',
+    (await evalJs('!!document.getElementById("reviewReport")')) === true);
+  await evalJs('document.getElementById("reviewReport").click(), 1');
+  await wait(700);
+  const reviewStatus = await text('#status');
+  check('复盘导出不写失败文案',
+    (reviewStatus || '').indexOf('战报生成失败') < 0 && /战报已保存/.test(reviewStatus || ''),
+    reviewStatus);
+  await press('Escape');
+  await wait(200);
+
+  /* ---------- T22 控制台 ---------- */
+  console.log('\n[T22] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
