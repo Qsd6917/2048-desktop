@@ -1485,6 +1485,8 @@
     state.perfectRecorded = 0;
     // 连击属于「这一局的手感」，换局一律从头数
     resetCombo();
+    // 上一局的彩带 / 落尘不能落到新棋盘上：通关后立刻「再来一局」是最常见的路径
+    if (fx) fx.stop();
     if (!keepDaily) {
       state.dailyKey = null;
       state.dailyRng = null;

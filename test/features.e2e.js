@@ -576,6 +576,24 @@ async function main() {
     fxBox.width + '×' + fxBox.height + ' / 视口 ' + fxBox.viewWidth + '×' + fxBox.viewHeight);
   check('#fx 不吃指针事件', fxBox.pointerEvents === 'none', fxBox.pointerEvents);
 
+  /* ---------- T5b 换局清掉上一局的特效 ---------- */
+  console.log('\n[T5b] 通关后立刻「新游戏」，上一局的彩带不能落在新棋盘上');
+
+  await wipe();
+  await click('#dailyChallenge');
+  await wait(400);
+  const winKey = await evalJs('Game2048Rng.dateKey(new Date())');
+  await inject({ daily: winKey, values: [[1024, 1024, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]] });
+
+  await press('ArrowLeft');
+  const winPixels = await waitForPixels(1500);
+  check('通关时彩带真的画在粒子层上', winPixels > 0, 'alpha px=' + winPixels);
+
+  await click('#newGame');
+  await wait(200);
+  const afterRestart = await fxPixels();
+  check('点「新游戏」后上一局特效被清空', afterRestart === 0, 'alpha px=' + afterRestart);
+
   /* ---------- T6 四模块联动冒烟 ---------- */
   console.log('\n[T6] 四模块联动：一步合并打穿四个模块');
 
@@ -813,9 +831,24 @@ async function main() {
   const wide = JSON.parse(await evalJs(`(function () {
     var board = document.getElementById('board').getBoundingClientRect();
     var app = document.getElementById('app').getBoundingClientRect();
+    // 真实测量：页脚、状态行、两排控制条与设置面板的最下缘
+    function bottom(selector) {
+      var el = document.querySelector(selector);
+      return el ? el.getBoundingClientRect().bottom : 0;
+    }
+    var rows = ['.controls', '.controls--sub', '.settings'];
+    var controlsBottom = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var b = bottom(rows[i]);
+      if (b > controlsBottom) controlsBottom = b;
+    }
     return JSON.stringify({
       top: board.top, bottom: board.bottom, width: board.width,
       appWidth: app.width,
+      footerBottom: bottom('.footer'),
+      statusBottom: bottom('#status'),
+      controlsBottom: controlsBottom,
+      docHeight: document.documentElement.scrollHeight,
       viewHeight: window.innerHeight,
       docWidth: document.documentElement.scrollWidth,
       viewWidth: window.innerWidth
@@ -830,6 +863,18 @@ async function main() {
     wide.width + ' / app ' + wide.appWidth);
   check('1280×800 下没有横向溢出', wide.docWidth <= wide.viewWidth,
     wide.docWidth + ' <= ' + wide.viewWidth);
+  // 高度预算的实测：页脚 / 状态行 / 控制条都必须真的落在视口内，
+  // 且整页不能有纵向滚动（scrollHeight 比 innerHeight 多 1px 以内算舍入）
+  check('1280×800 下页脚、状态行、控制条都没被挤出视口',
+    wide.footerBottom <= wide.viewHeight + 0.5 &&
+      wide.statusBottom <= wide.viewHeight + 0.5 &&
+      wide.controlsBottom <= wide.viewHeight + 0.5,
+    'footer ' + Math.round(wide.footerBottom) +
+      ' · status ' + Math.round(wide.statusBottom) +
+      ' · controls ' + Math.round(wide.controlsBottom) + ' / vh ' + wide.viewHeight);
+  check('1280×800 下没有纵向溢出',
+    wide.docHeight <= wide.viewHeight + 1,
+    wide.docHeight + ' <= ' + wide.viewHeight + ' + 1');
 
   await send('Emulation.clearDeviceMetricsOverride');
   await wait(200);
