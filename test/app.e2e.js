@@ -122,6 +122,10 @@ async function main() {
     PAGE
   ], { stdio: 'ignore' });
 
+  // 浏览器句柄的生命周期收进 try/finally：任何退出路径（包括 eval 抛异常中断）
+  // 都必须杀掉无头 Chrome，不留孤儿进程。
+  try {
+
   let target = null;
   for (let i = 0; i < 80 && !target; i++) {
     await wait(150);
@@ -477,9 +481,11 @@ async function main() {
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
   ws.close();
-  chrome.kill();
-  await wait(300);
-  try { fs.rmSync(USER_DIR, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+  } finally {
+    chrome.kill();
+    await wait(300);
+    try { fs.rmSync(USER_DIR, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+  }
   process.exit(fail === 0 ? 0 : 1);
 }
 

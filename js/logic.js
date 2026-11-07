@@ -156,7 +156,6 @@
    */
   function newGame(opts) {
     var options = opts || {};
-    if (typeof options === 'number') options = { size: options };
     var size = options.size || DEFAULT_SIZE;
     var random = options.random;
 

@@ -432,7 +432,8 @@
 
     // 先 setSize：它会清掉渲染层的障碍账本，否则新一局的障碍落在旧坐标上不会淡入
     renderer.setSize(settings.size);
-    renderer.renderBoard(state.board, { instant: true });
+    // 开局走非即时路径：两个方块 60ms 错峰 + appear 弹出（撤销/读档才是 instant）
+    renderer.renderBoard(state.board);
 
     hideOverlay();
     renderHud();
