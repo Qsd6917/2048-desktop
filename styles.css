@@ -120,6 +120,27 @@ body {
   }
 }
 
+/* ---------- 目标 / 最大 / 计时 ---------- */
+.hud {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #a89a8e;
+}
+
+.hud-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.hud-value {
+  font-weight: 800;
+  color: #8f7a66;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- 按钮 ---------- */
 .toolbar {
   display: flex;
@@ -170,6 +191,7 @@ body {
 
 /* ---------- 棋盘 ---------- */
 .board {
+  --size: 4;
   --pad: 12px;
   --gap: 12px;
   --cell: 80px;
@@ -194,8 +216,9 @@ body {
   position: absolute;
   inset: var(--pad);
   display: grid;
-  grid-template-columns: repeat(4, var(--cell));
-  grid-template-rows: repeat(4, var(--cell));
+  /* 边长由渲染层写到 .board 的 --size 上，4/5/6 共用同一套规则 */
+  grid-template-columns: repeat(var(--size, 4), var(--cell));
+  grid-template-rows: repeat(var(--size, 4), var(--cell));
   gap: var(--gap);
 }
 
@@ -207,6 +230,16 @@ body {
 .tile-layer {
   position: absolute;
   inset: 0;
+}
+
+/* 障碍：按 tile 的定位方式摆放，但没有内层方块，底色直接画在外层上 */
+.tile--obstacle {
+  background: #9b8b7e;
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 -3px 0 rgba(0, 0, 0, 0.18),
+    inset 0 3px 0 rgba(255, 255, 255, 0.12);
+  pointer-events: none;
 }
 
 /* 外层只负责位移，内层负责缩放和弹出，两者互不干扰 */

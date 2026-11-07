@@ -1,11 +1,14 @@
+/**
+ * 2048 控制器 —— 玩法状态、输入、存档、浮层。
+ * 棋盘上的 DOM 与动画全部交给 Game2048Renderer（js/renderer.js）。
+ */
 (function () {
   'use strict';
 
   var G = window.Game2048;
+  var Renderer = window.Game2048Renderer;
 
   var SIZE = 4;
-  var SLIDE_MS = 110;   // 必须和 styles.css 里 .tile 的 transition 时长一致
-  var POP_MS = 175;     // 合成块的弹出动画时长
   var UNDO_LIMIT = 20;
   var BEST_KEY = 'game2048.best';
   var STATE_KEY = 'game2048.state';
@@ -41,6 +44,9 @@
     score: document.getElementById('score'),
     best: document.getElementById('best'),
     gain: document.getElementById('scoreGain'),
+    goal: document.getElementById('goal'),
+    maxTile: document.getElementById('maxTile'),
+    timer: document.getElementById('timer'),
     overlay: document.getElementById('overlay'),
     overlayTitle: document.getElementById('overlayTitle'),
     overlayText: document.getElementById('overlayText'),
@@ -49,6 +55,12 @@
     undo: document.getElementById('undo'),
     status: document.getElementById('status')
   };
+
+  var renderer = Renderer.create({
+    boardEl: els.board,
+    gridEl: els.grid,
+    tileEl: els.tiles
+  });
 
   var state = {
     board: G.emptyBoard(SIZE),
@@ -59,115 +71,6 @@
     over: false,
     history: []
   };
-
-  var nodes = new Map();   // tile.id -> { el, inner, text }
-  var generation = 0;      // 重开 / 撤销时自增，用来丢弃过期的动画回调
-
-  /* ---------- 尺寸 ---------- */
-  function layout() {
-    var width = els.board.clientWidth;
-    if (!width) return;
-    var pad = Math.max(7, Math.round(width * 0.026));
-    var gap = Math.max(7, Math.round(width * 0.026));
-    var cell = (width - pad * 2 - gap * (SIZE - 1)) / SIZE;
-    els.board.style.setProperty('--pad', pad + 'px');
-    els.board.style.setProperty('--gap', gap + 'px');
-    els.board.style.setProperty('--cell', cell + 'px');
-    els.board.style.setProperty('--radius', Math.max(4, Math.round(cell * 0.055)) + 'px');
-  }
-
-  function buildGrid() {
-    var fragment = document.createDocumentFragment();
-    for (var i = 0; i < SIZE * SIZE; i++) {
-      var cell = document.createElement('div');
-      cell.className = 'grid-cell';
-      fragment.appendChild(cell);
-    }
-    els.grid.innerHTML = '';
-    els.grid.appendChild(fragment);
-  }
-
-  /* ---------- 方块渲染 ---------- */
-  function createNode(tile) {
-    var el = document.createElement('div');
-    el.className = 'tile';
-    // 先定好初始位置再插进 DOM，避免第一帧从 (0,0) 飞过来
-    el.style.setProperty('--x', String(tile.col));
-    el.style.setProperty('--y', String(tile.row));
-
-    var inner = document.createElement('div');
-    inner.className = 'tile__inner';
-
-    var text = document.createElement('span');
-    text.className = 'tile__value';
-    inner.appendChild(text);
-    el.appendChild(inner);
-
-    els.tiles.appendChild(el);
-
-    var node = { el: el, inner: inner, text: text };
-    nodes.set(tile.id, node);
-    return node;
-  }
-
-  function paint(node, tile) {
-    node.text.textContent = String(tile.value);
-    node.inner.dataset.value = String(tile.value);
-    node.inner.classList.toggle('len3', tile.value >= 100 && tile.value < 1000);
-    node.inner.classList.toggle('len4', tile.value >= 1000);
-    node.inner.classList.toggle('is-super', tile.value > G.WIN_VALUE);
-  }
-
-  /**
-   * 让一个方块出现在棋盘上。
-   * 已存在的方块只更新坐标（靠 CSS transition 滑过去）；
-   * 新建的方块按 instant / merged / appear 三种方式入场。
-   */
-  function mountTile(tile, options) {
-    var opts = options || {};
-    var node = nodes.get(tile.id);
-    var created = false;
-
-    if (!node) {
-      node = createNode(tile);
-      created = true;
-    }
-
-    paint(node, tile);
-
-    if (!created) {
-      node.el.style.setProperty('--x', String(tile.col));
-      node.el.style.setProperty('--y', String(tile.row));
-      return node;
-    }
-
-    if (opts.instant) return node;
-
-    node.inner.classList.add(opts.merged ? 'anim-merge' : 'anim-appear');
-    if (opts.delay) node.inner.style.animationDelay = opts.delay + 'ms';
-    return node;
-  }
-
-  function moveTileNode(tile, row, col) {
-    var node = nodes.get(tile.id);
-    if (!node) return;
-    node.el.style.setProperty('--x', String(col));
-    node.el.style.setProperty('--y', String(row));
-  }
-
-  function removeTile(id) {
-    var node = nodes.get(id);
-    if (!node) return;
-    node.el.remove();
-    nodes.delete(id);
-  }
-
-  function clearTiles() {
-    nodes.forEach(function (node) {
-      node.el.remove();
-    });
-    nodes.clear();
-  }
 
   /* ---------- 分数 ---------- */
   function addScore(delta) {
@@ -189,6 +92,8 @@
   function renderScore() {
     els.score.textContent = String(state.score);
     els.best.textContent = String(state.best);
+    if (els.goal) els.goal.textContent = String(G.GOAL_BY_SIZE[SIZE]);
+    if (els.maxTile) els.maxTile.textContent = String(G.maxValue(state.board));
     els.undo.disabled = state.history.length === 0;
   }
 
@@ -269,6 +174,7 @@
     }
   }
 
+  /** 读档成功时把局面写进 state（渲染由调用方负责） */
   function restoreState() {
     var raw;
     try {
@@ -296,10 +202,6 @@
     state.keepPlaying = Boolean(data.keepPlaying);
     state.board = G.boardFromValues(data.values);
 
-    G.tiles(state.board).forEach(function (tile) {
-      mountTile(tile, { instant: true });
-    });
-
     return true;
   }
 
@@ -322,71 +224,47 @@
 
     pushHistory();
 
-    var gen = generation;
     state.board = result.board;
 
-    // 1. 所有参与移动的方块先滑到目标格（包括马上要被吃掉的两个源块）
-    result.slides.forEach(function (slide) {
-      moveTileNode(slide.tile, slide.row, slide.col);
-    });
-
-    // 2. 合成出来的新块立刻建好但延迟出场，滑动结束的瞬间才亮起
-    result.merges.forEach(function (merge) {
-      mountTile(merge.tile, { merged: true, delay: SLIDE_MS });
-    });
-
-    // 3. 滑动结束后把被合并掉的源块从 DOM 移除
-    var consumed = [];
-    result.merges.forEach(function (merge) {
-      consumed = consumed.concat(merge.sources);
-    });
-    window.setTimeout(function () {
-      if (gen !== generation) return;
-      consumed.forEach(function (tile) {
-        removeTile(tile.id);
-      });
-    }, SLIDE_MS);
-
-    // 4. 落一个新子
+    // 落子属于规则，放在控制器里；渲染层只负责把它演出来
     var spawned = G.spawnRandom(state.board);
-    if (spawned) mountTile(spawned, { delay: SLIDE_MS });
 
     if (result.gained) addScore(result.gained);
     renderScore();
 
-    // 5. 判定胜负
+    // 胜负先判定（立刻影响存档与是否还能走），浮层等动画播完再弹
+    var ending = null;
     if (!state.won && !state.keepPlaying && G.hasWon(state.board)) {
       state.won = true;
-      window.setTimeout(function () {
-        if (gen !== generation) return;
-        showWin();
-      }, SLIDE_MS + POP_MS);
+      ending = 'win';
     } else if (!G.hasMoves(state.board)) {
       state.over = true;
-      window.setTimeout(function () {
-        if (gen !== generation) return;
-        showGameOver();
-      }, SLIDE_MS + POP_MS);
+      ending = 'lose';
     }
 
     saveState();
     setStatus('得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.history.length + ' 步');
+
+    renderer
+      .playMove({
+        slides: result.slides,
+        merges: result.merges,
+        spawned: spawned,
+        board: state.board
+      })
+      .then(function (completed) {
+        // 动画被撤销/重开打断时 completed 为 false，这一局已经作废，不再弹结算
+        if (!completed || !ending) return;
+        if (ending === 'win') showWin();
+        else showGameOver();
+      });
   }
 
   /* ---------- 撤销 / 重开 ---------- */
-  function rebuild(values) {
-    clearTiles();
-    state.board = G.boardFromValues(values);
-    G.tiles(state.board).forEach(function (tile) {
-      mountTile(tile, { instant: true });
-    });
-  }
-
   function undo() {
     if (!state.history.length) return;
 
     var snapshot = state.history.pop();
-    generation += 1;     // 让还没执行的动画回调全部失效
 
     hideOverlay();
     state.over = false;
@@ -394,27 +272,26 @@
     state.keepPlaying = snapshot.keepPlaying;
     state.score = snapshot.score;
 
-    rebuild(snapshot.values);
+    // renderBoard 内部会自增渲染层的 generation，未完成的动画回调与 Promise 一并作废
+    state.board = G.boardFromValues(snapshot.values);
+    renderer.renderBoard(state.board, { instant: true });
+
     renderScore();
     saveState();
     setStatus('已撤销一步');
   }
 
   function startNewGame() {
-    generation += 1;
-    clearTiles();
-
     state.history.length = 0;
     state.score = 0;
     state.won = false;
     state.keepPlaying = false;
     state.over = false;
 
-    var game = G.newGame(SIZE);
+    var game = G.newGame({ size: SIZE });
     state.board = game.board;
-    game.spawned.forEach(function (tile, index) {
-      mountTile(tile, { delay: index * 60 });
-    });
+    // 不带 instant：两个开局方块错开入场，和基线表现一致
+    renderer.renderBoard(state.board);
 
     hideOverlay();
     renderScore();
@@ -484,8 +361,7 @@
 
   /* ---------- 启动 ---------- */
   function init() {
-    buildGrid();
-    layout();
+    renderer.setSize(SIZE);   // 建 4×4 网格并清空全部方块
 
     var storedBest = 0;
     try {
@@ -496,12 +372,12 @@
     state.best = storedBest;
 
     var restored = restoreState();
-    if (!restored) {
-      var game = G.newGame(SIZE);
+    if (restored) {
+      renderer.renderBoard(state.board, { instant: true });
+    } else {
+      var game = G.newGame({ size: SIZE });
       state.board = game.board;
-      game.spawned.forEach(function (tile, index) {
-        mountTile(tile, { delay: index * 60 });
-      });
+      renderer.renderBoard(state.board);
     }
 
     renderScore();
@@ -514,11 +390,6 @@
     els.board.addEventListener('pointercancel', function () {
       pointerStart = null;
     });
-
-    if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(layout).observe(els.board);
-    }
-    window.addEventListener('resize', layout);
 
     if (!G.hasMoves(state.board)) {
       state.over = true;
