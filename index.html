@@ -93,12 +93,24 @@
     </footer>
   </main>
 
+  <!-- 复盘抽屉：与成就共用外层 .sheet，内容由 app.js 渲染 -->
+  <div class="sheet" id="reviewSheet" hidden>
+    <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+      <header class="sheet__head">
+        <h2 id="reviewTitle">今日复盘</h2>
+        <button class="btn btn--icon" id="reviewClose" type="button" aria-label="关闭">×</button>
+      </header>
+      <div class="sheet__body" id="reviewBody"></div>
+    </div>
+  </div>
+
   <script src="js/logic.js"></script>
   <script src="js/rng.js"></script>
   <script src="js/daily.js"></script>
   <script src="js/ai.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/review.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/app.js"></script>
 </body>
