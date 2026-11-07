@@ -42,9 +42,10 @@
   /** 合并音的基础音量；第 i 个音按 1/(1+0.3i) 递减 */
   var MERGE_BASE_GAIN = 0.055;
 
-  /** 连击加花：多出来那个高八度弱音的相对音量与追加延迟 */
+  /** 连击加花与「大块合并」加花的相对音量与追加延迟 */
   var COMBO_GHOST_GAIN = 0.35;
-  var COMBO_GHOST_DELAY_MS = 40;
+  var ACCENT_GHOST_GAIN = 0.5;
+  var GHOST_DELAY_MS = 40;
 
   /** 以 2 为底的对数（不依赖 Math.log2，保持与老环境一致） */
   function log2(value) {
@@ -108,13 +109,27 @@
     return out;
   }
 
+  /** 在给定音符上方叠一个八度弱音 */
+  function ghostOf(base, gainRatio) {
+    return {
+      freq: round2(base.freq * 2),
+      delayMs: base.delayMs + GHOST_DELAY_MS,
+      durMs: MERGE_DUR_MS,
+      gain: base.gain * gainRatio
+    };
+  }
+
   /**
    * 合并音：一步里所有合并值的琶音。
    * @param {Array<number>} values 合并出来的方块值
    * @param {number} [combo] 当前连击数；>= 3 时追加一个高八度弱音
+   * @param {{accent?: boolean}} [opts] accent 为 true（本次最大合并值 >= 256）时
+   *        再追加一个高八度弱音。两个条件互相独立：同时成立就叠两个（同频叠加，
+   *        听感上更亮更响，正是「大块合并且在连击中」该有的分量）。
    * @returns {Array<{freq: number, delayMs: number, durMs: number, gain: number}>}
    */
-  function mergeNotes(values, combo) {
+  function mergeNotes(values, combo, opts) {
+    var options = opts || {};
     var list = normalizeValues(values);
     var notes = [];
 
@@ -127,15 +142,10 @@
       });
     }
 
-    if (Number(combo) >= 3 && notes.length) {
-      var last = notes[notes.length - 1];
-      notes.push({
-        freq: round2(last.freq * 2),
-        delayMs: last.delayMs + COMBO_GHOST_DELAY_MS,
-        durMs: MERGE_DUR_MS,
-        gain: last.gain * COMBO_GHOST_GAIN
-      });
-    }
+    // 加花永远基于「真正的末音」，不能拿上一个加花当基准，否则会一路翻上去
+    var base = notes.length ? notes[notes.length - 1] : null;
+    if (base && Number(combo) >= 3) notes.push(ghostOf(base, COMBO_GHOST_GAIN));
+    if (base && options.accent === true) notes.push(ghostOf(base, ACCENT_GHOST_GAIN));
 
     return notes;
   }

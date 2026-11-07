@@ -126,11 +126,12 @@
    * 一步里多组合并：按方块值升序播一段琶音。
    * @param {Array<number>} values
    * @param {number} [combo]
+   * @param {{accent?: boolean}} [opts] 透传给 tuning：大块合并（≥256）加高八度
    */
-  function playMergeSet(values, combo) {
+  function playMergeSet(values, combo, opts) {
     if (!enabled || !Tuning) return;
 
-    var notes = Tuning.mergeNotes(values, combo || 0);
+    var notes = Tuning.mergeNotes(values, combo || 0, opts);
     if (!notes.length) {
       move();
       return;
@@ -163,16 +164,27 @@
   }
 
   /**
-   * 连击亮点：音高随连击数上行，两声短促叠音。
+   * 连击亮点：音高随连击数在五声音阶里上行，两声短促叠音。
+   *
+   * 音级不能用「每次 +2 个半音」：那样会滑出五声、直冲 4kHz 变得很尖。
+   * 这里从 G5 起按 PENTATONIC 走级，连击封顶 6 级（最高 G6），
+   * 第二声取上方两级（仍是调内音），保证和别的音效协和。
+   *
    * @param {number} combo
    */
   function comboSpark(combo) {
     if (!enabled || !Tuning) return;
 
-    var level = Math.min(9, Math.max(1, Math.floor(Number(combo) || 1)));
-    var frequency = Tuning.midiToFreq(84 + level * 2);
-    tone(frequency, 90, 'sine', 0.05, 0);
-    tone(frequency * 1.5, 110, 'sine', 0.035, 70);
+    var level = Math.min(6, Math.max(1, Math.floor(Number(combo) || 1)));
+    var degree = level - 1;
+    var base = 79;   // G5
+
+    function midiOf(step) {
+      return base + Tuning.PENTATONIC[step % 5] + 12 * Math.floor(step / 5);
+    }
+
+    tone(Tuning.midiToFreq(midiOf(degree)), 90, 'sine', 0.05, 0);
+    tone(Tuning.midiToFreq(midiOf(degree + 2)), 110, 'sine', 0.035, 70);
   }
 
   /**

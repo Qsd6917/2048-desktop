@@ -63,6 +63,8 @@
   var COMBO_MAX = 9;
   /** 到这个连击数才给扫光与状态提示 */
   var COMBO_FX_AT = 3;
+  /** 大块合并的门槛：到这个值，音频加高八度、视觉加环与震屏 */
+  var ACCENT_VALUE = 256;
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -1270,10 +1272,14 @@
    * 合并特效：音效与粒子共用这一个入口，保证听见的和看见的是同一件事。
    * 坐标取渲染层的格子中心（视口坐标），所以粒子会从合并格飞出去、跨出棋盘。
    *
+   * 注意顺序：连击音效先响，再判视觉层 —— 音效不该被「粒子模块没加载/没有 canvas」
+   * 这种视觉侧问题门控掉。
+   *
    * @param {Array} merges computeMove 的合并列表（含 row/col/value）
    * @param {number} combo 本步的连击数
    */
   function emitMergeFx(merges, combo) {
+    if (combo >= COMBO_FX_AT) Audio.comboSpark(combo);
     if (!fx) return;
 
     for (var i = 0; i < merges.length; i++) {
@@ -1287,16 +1293,13 @@
         y: pos.y
       }));
 
-      if (merge.value >= 256) {
+      if (merge.value >= ACCENT_VALUE) {
         fx.ring(pos.x, pos.y, merge.value);
         fx.shake(0.4 + log2(merge.value) * 0.02);
       }
     }
 
-    if (combo >= COMBO_FX_AT) {
-      fx.sweep();
-      Audio.comboSpark(combo);
-    }
+    if (combo >= COMBO_FX_AT) fx.sweep();
   }
 
   /**
@@ -1304,7 +1307,7 @@
    * 延迟期间可能换局或撤销，回调里按 session 作废。
    */
   function scheduleMergeFx(merges, combo, session) {
-    if (!fx || !merges.length) return;
+    if (!merges.length) return;
 
     global.setTimeout(function () {
       if (state.session !== session) return;
@@ -1362,7 +1365,7 @@
 
   /**
    * 本步的声音：有合并就按合并值播琶音（一步多组也不会糊），没有就是滑动声。
-   * 音高与连击加成全交给 audio + tuning，这里只负责把「发生了什么」递过去。
+   * 音高、连击加成、大块加花全交给 audio + tuning，这里只负责把「发生了什么」递过去。
    */
   function playMoveSound(result) {
     var merges = result.merges || [];
@@ -1372,8 +1375,14 @@
     }
 
     var values = [];
-    for (var i = 0; i < merges.length; i++) values.push(merges[i].value);
-    Audio.playMergeSet(values, state.combo);
+    var best = 0;
+    for (var i = 0; i < merges.length; i++) {
+      values.push(merges[i].value);
+      if (merges[i].value > best) best = merges[i].value;
+    }
+
+    // ≥256 与连击是两个独立条件：前者看本次最大合并值，后者看连击数
+    Audio.playMergeSet(values, state.combo, { accent: best >= ACCENT_VALUE });
   }
 
   /* ---------- 玩家输入入口 ---------- */

@@ -150,6 +150,40 @@ group('结算音', function () {
   eq('dailyStart 为 G4 C5', daily.map(function (n) { return n.freq; }), [392, 523.25]);
 });
 
+group('mergeNotes：大块合并加花（accent）', function () {
+  const plain = Tuning.mergeNotes([256], 0);
+  const accented = Tuning.mergeNotes([256], 0, { accent: true });
+
+  eq('不带 accent 只有一个音', plain.length, 1);
+  eq('accent 多一个高八度音', accented.length, 2);
+
+  const base = accented[0];
+  const ghost = accented[1];
+  eq('accent 频率翻倍', ghost.freq, base.freq * 2);
+  eq('accent 延迟 = 末音 + 40', ghost.delayMs, base.delayMs + 40);
+  near('accent 音量为末音的 0.5', ghost.gain, base.gain * 0.5, 1e-9);
+  eq('accent 与连击无关（combo 0 也生效）', accented.length > plain.length, true);
+
+  eq('accent:false 不发声', Tuning.mergeNotes([256], 0, { accent: false }).length, 1);
+  eq('空 opts 不影响旧行为', Tuning.mergeNotes([256], 0, {}).length, 1);
+  eq('accent 对低值也照做（由调用方判阈值）',
+    Tuning.mergeNotes([4], 0, { accent: true }).length, 2);
+
+  // 两个条件互相独立：同时成立就该叠两个加花，且都基于真正的末音
+  const both = Tuning.mergeNotes([256], 3, { accent: true });
+  eq('连击 + accent 共三个音', both.length, 3);
+  eq('两个加花都是末音的高八度',
+    both.slice(1).map(function (n) { return n.freq; }),
+    [base.freq * 2, base.freq * 2]);
+  near('一个 0.35 一个 0.5',
+    both[1].gain / base.gain + both[2].gain / base.gain, 0.85, 1e-9);
+
+  // 多值合并时加花只跟最后一个（最高）音走，不会一路翻上去
+  const multi = Tuning.mergeNotes([2, 4, 256], 0, { accent: true });
+  eq('多值只加一个音', multi.length, 4);
+  eq('加花跟最高音', multi[3].freq, multi[2].freq * 2);
+});
+
 group('纯函数性', function () {
   const a = Tuning.mergeNotes([2, 8], 5);
   const b = Tuning.mergeNotes([2, 8], 5);
