@@ -45,6 +45,15 @@
   /** 探测结果：真实 localStorage 或内存替身；null 表示还没探测 */
   var backend = null;
 
+  /**
+   * 降级前的真实后端（只在降级那一刻记一次）。
+   *
+   * 降级后本会话不再切回去，写的都是内存；但 `remove` 必须同时删掉旧后端里
+   * 那一份 —— 否则配额恢复后刷新，旧 `state` 会从 localStorage 里「复活」，
+   * 玩家看到一局早就结束的旧盘面。
+   */
+  var previousBackend = null;
+
   function createMemoryBackend() {
     return {
       getItem: function (key) {
@@ -99,12 +108,16 @@
    *
    * 优先整体搬迁（连 review.<date> 这类动态键一起带走）；
    * 旧后端不支持 length/key 或中途抛异常时，退回按 KEYS 逐个搬。
+   *
+   * 同时记下旧后端引用：降级会话里的 `remove` 要顺手把旧后端那份也删掉，
+   * 否则配额恢复后刷新会读到降级前的旧档（见 previousBackend 注释）。
    */
   function degradeToMemory() {
     var previous = backend;
     var next = createMemoryBackend();
 
     if (previous) {
+      previousBackend = previous;
       var migrated = false;
       try {
         migrated = migrateAllKeys(previous);
@@ -194,11 +207,27 @@
     }
   }
 
+  /**
+   * 删一个键。
+   *
+   * 降级到内存后删的是内存那份；真实 localStorage 里的同一份必须一起删，
+   * 否则配额恢复后刷新会把旧档读回来。旧后端可能连 removeItem 都抛异常，
+   * 这里一律吞掉：删不掉是环境问题，不该冒到控制器。
+   */
   function remove(key) {
+    var fullKey = PREFIX + key;
     try {
-      getBackend().removeItem(PREFIX + key);
+      getBackend().removeItem(fullKey);
     } catch (e) {
       /* 忽略 */
+    }
+
+    if (previousBackend && previousBackend !== backend) {
+      try {
+        previousBackend.removeItem(fullKey);
+      } catch (e2) {
+        /* 旧后端已经不可写，放弃补偿 */
+      }
     }
   }
 

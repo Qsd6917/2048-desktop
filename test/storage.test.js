@@ -323,6 +323,48 @@ console.log('\n配额降级时整条搬迁（含 review.<日期> 动态键）');
   eq('新写的数据读得到', S.get(S.KEYS.state, null), { score: 2 });
 }
 
+/* ---------- 8. 降级后 remove 同时删旧后端 ---------- */
+
+console.log('\n降级后 remove 不能让旧档复活');
+
+{
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+
+  S.set(S.KEYS.state, { score: 10, values: [[2]] });
+  eq('前置：旧后端里有这份存档', ls.getItem('game2048.v2.state') !== null, true);
+
+  ls.limitAfter(ls.writes());      // 下一次写入开始配额满 → 触发降级
+  ok('触发降级的写入仍算成功', S.set(S.KEYS.stats, { games: 1 }) === true);
+  eq('降级后仍读得到旧存档（已搬进内存）', S.get(S.KEYS.state, null), { score: 10, values: [[2]] });
+
+  S.remove(S.KEYS.state);
+  eq('内存里的存档删掉了', S.get(S.KEYS.state, null), null);
+  eq('旧 localStorage 里的同一份也删掉了', ls.getItem('game2048.v2.state'), null);
+}
+
+{
+  // 旧后端连 removeItem 都抛异常：remove 不能把异常冒出来
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+  S.set(S.KEYS.state, { score: 1 });
+  ls.limitAfter(ls.writes());
+  S.set(S.KEYS.stats, { games: 1 });
+
+  ls.removeItem = function () {
+    throw new Error('SecurityError');
+  };
+
+  let threw = false;
+  try {
+    S.remove(S.KEYS.state);
+  } catch (e) {
+    threw = true;
+  }
+  ok('旧后端删除抛异常时 remove 也不冒泡', threw === false);
+  eq('内存里的那份仍然删掉了', S.get(S.KEYS.state, null), null);
+}
+
 /* ---------- 汇总 ---------- */
 
 console.log('\n通过 ' + pass + ' 项，失败 ' + fail + ' 项');
