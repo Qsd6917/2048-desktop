@@ -761,8 +761,82 @@ async function main() {
     Boolean(afterSecond) && afterSecond.stats.perfectMoves === 5,
     afterSecond && String(afterSecond.stats.perfectMoves));
 
-  /* ---------- T13 控制台 ---------- */
-  console.log('\n[T13] 控制台');
+  /* ---------- T13 托管达成目标后不中断 ---------- */
+  console.log('\n[T13] 托管达成目标后继续跑');
+
+  // 两行各摆一对 1024：上下左右无论 AI 选哪个方向都会合出 2048，
+  // 这样断言不依赖 expectimax 具体挑哪一步。
+  await loadBoard([
+    [1024, 1024, 0, 0],
+    [1024, 1024, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'classic');
+
+  const beforeT13 = await stats();
+  const winsBefore = await evalJs(`(function () {
+    var p = Game2048Storage.get(Game2048Storage.KEYS.profile, null);
+    return p && p.stats && typeof p.stats.wins === 'number' ? p.stats.wins : 0;
+  })()`);
+
+  await click('#autoplay');
+
+  let maxSeen = 0;
+  for (let i = 0; i < 50 && maxSeen < 2048; i++) {
+    await wait(100);
+    maxSeen = await evalJs(`(function () {
+      var nodes = document.querySelectorAll('#tileLayer [data-value]');
+      var max = 0;
+      for (var k = 0; k < nodes.length; k++) {
+        var v = Number(nodes[k].getAttribute('data-value'));
+        if (v > max) max = v;
+      }
+      return max;
+    })()`);
+  }
+
+  check('托管把 2048 打出来了', maxSeen >= 2048, '最大 ' + maxSeen);
+
+  // 方块在动画开端就进了 DOM，判胜负与落盘在动画收尾（约 285ms）之后，
+  // 这里等这一步结算完再读存档，否则读到的是注入时那份还没走子过的状态。
+  await wait(700);
+
+  check('达成目标没有弹结算浮层', (await overlayHidden()) === true);
+  check('托管没有被停掉', (await autoplayOn()) === true);
+
+  const atWin = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+  ));
+  check('存档里这一局还在进行',
+    Boolean(atWin) && atWin.won === true && atWin.keepPlaying === true,
+    JSON.stringify(atWin && { won: atWin.won, keepPlaying: atWin.keepPlaying, moves: atWin.moves }));
+
+  const movesAtWin = atWin ? atWin.moves : 0;
+  await wait(1500);
+  const later = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+  ));
+  check('目标之后托管继续走子',
+    Boolean(later) && later.moves > movesAtWin,
+    movesAtWin + ' -> ' + (later && later.moves));
+
+  const winsAfter = await evalJs(`(function () {
+    var p = Game2048Storage.get(Game2048Storage.KEYS.profile, null);
+    return p && p.stats && typeof p.stats.wins === 'number' ? p.stats.wins : 0;
+  })()`);
+  check('不弹浮层也没有漏记通关', winsAfter === winsBefore + 1, winsBefore + ' -> ' + winsAfter);
+
+  const afterT13 = await stats();
+  check('这一局照常记进游戏数', afterT13.games === beforeT13.games + 1,
+    beforeT13.games + ' -> ' + afterT13.games);
+
+  if (await autoplayOn()) {
+    await click('#autoplay');
+    await wait(300);
+  }
+
+  /* ---------- T14 控制台 ---------- */
+  console.log('\n[T14] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

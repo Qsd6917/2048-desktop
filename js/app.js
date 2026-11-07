@@ -1525,6 +1525,26 @@
     scheduleAutoplay(AUTOPLAY_DELAY_MS);
   }
 
+  /**
+   * 结算入账：记账、落盘复盘、刷新 HUD，外加这一局该有的音效与粒子。
+   *
+   * 与「弹不弹浮层」拆开，是因为托管到目标时不要浮层（浮层会夺焦点并停掉托管），
+   * 但这一局仍然必须记上 —— 否则「托管打到 2048」在统计里等于没发生。
+   */
+  function bankResult(reason) {
+    recordGame();
+    finalizeReview();   // 每日局结算时补算评分并落盘（内部自带条件与幂等）
+    renderHud();
+
+    if (reason === 'win') {
+      Audio.win();
+      if (fx) fx.confetti(120);   // 全屏彩带
+    } else {
+      Audio.gameover();
+      if (fx) fx.dust(40);        // 死局/超时：缓慢落尘
+    }
+  }
+
   /** 幂等：一局只结算一次，谁先触发算谁的 */
   function finishGame(reason) {
     if (state.over) return;
@@ -1535,20 +1555,11 @@
 
     stopCountdown();
     disableAutoplay();
-    recordGame();
-    finalizeReview();   // 每日局结算时补算评分并落盘（内部自带条件与幂等）
-    renderHud();
+    bankResult(reason);
 
-    if (reason === 'win') {
-      Audio.win();
-      if (fx) fx.confetti(120);   // 全屏彩带
-      showWinOverlay();
-    } else {
-      Audio.gameover();
-      if (fx) fx.dust(40);        // 死局/超时：缓慢落尘
-      if (reason === 'time') showTimeOverlay();
-      else showStuckOverlay();
-    }
+    if (reason === 'win') showWinOverlay();
+    else if (reason === 'time') showTimeOverlay();
+    else showStuckOverlay();
 
     saveState();   // over 状态下等价于移除存档
   }
@@ -1844,6 +1855,12 @@
 
     if (!state.won && !state.keepPlaying && G.hasWon(state.board, goalValue())) {
       state.won = true;
+      // 托管时目标只是中途里程碑：入账、放特效，然后原地接着跑。
+      // 一弹浮层就 disableAutoplay + stopCountdown，无人值守的托管会冻在目标这一步。
+      if (autoplay) {
+        autoContinue();
+        return;
+      }
       finishGame('win');
       return;
     }
@@ -2094,6 +2111,24 @@
     if (MODES[settings.mode].timeLimitMs > 0) startCountdown();
 
     setStatus('继续挑战 · 目标已达成，往上接着冲');
+    scheduleAutoplay(AUTOPLAY_DELAY_MS);
+  }
+
+  /**
+   * 托管到达目标后的原地续跑。
+   *
+   * 状态与「继续挑战」一致（keepPlaying + won 保持 true），区别只有三点：
+   * 不弹浮层（会夺焦点）、不停托管（否则整局冻在这一步）、不停计时（限时局照走）。
+   * 这一局该记的分、该放的彩带、该入的复盘一样不少，只是没有一个要人点的按钮。
+   */
+  function autoContinue() {
+    state.over = false;
+    state.keepPlaying = true;
+
+    bankResult('win');
+    saveState();
+
+    setStatus('目标已达成 · 托管继续往上冲');
     scheduleAutoplay(AUTOPLAY_DELAY_MS);
   }
 
