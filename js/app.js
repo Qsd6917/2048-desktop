@@ -27,6 +27,7 @@
   var Review = global.Game2048Review;
   var Achievements = global.Game2048Achievements;
   var Fx = global.Game2048Fx;
+  var Report = global.Game2048Report;
 
   /* ---------- 常量 ---------- */
 
@@ -959,6 +960,8 @@
     };
 
     renderReview(log, summary, Review.analyze(summary, ctx), ctx);
+    // 落在正文末尾：只有今天有落盘日志时才有这个按钮
+    appendReportEntry(stored);
   }
 
   /** 渲染失败时的兜底内容：抽屉照常打开，玩家能关掉它，计时就会恢复 */
@@ -2265,6 +2268,195 @@
     setStatus('托管已开启');
   }
 
+  /* ---------- 战报 ---------- */
+
+  /** 成就口径的解锁计数；模块缺失时给一个能安全渲染的空值 */
+  function achievementsSummary() {
+    if (!Achievements) return { unlocked: 0, total: 0 };
+    return {
+      unlocked: profile ? Achievements.countUnlocked(profile) : 0,
+      total: Achievements.DEFINITIONS.length
+    };
+  }
+
+  /** 结算时这一局的战报入参：盘面直接取当前棋盘 */
+  function currentReportData() {
+    var key = todayKey();
+    var isDaily = state.dailyKey === key;
+    var store = loadDailyStore();
+    var record = isDaily ? Daily.bestOf(store, key) : null;
+
+    return {
+      date: key,
+      size: state.board ? state.board.length : settings.size,
+      score: state.score,
+      maxTile: state.board ? G.maxValue(state.board) : 0,
+      moves: state.moves,
+      mode: settings.mode,
+      // 跨日后这一局已经不算今日挑战，按普通局出卡，避免写进今天的连续天数
+      daily: isDaily
+        ? {
+            streak: Daily.streakOf(store, key).current,
+            attempt: record ? record.attempts : 0
+          }
+        : null,
+      achievements: achievementsSummary(),
+      values: state.board ? G.toValues(state.board) : []
+    };
+  }
+
+  /**
+   * 落盘日志里最后一个盘面。
+   *
+   * 日志的 v 存的是「走这一步之前」的局面，也没有记录最后落下的新方块，
+   * 所以这张缩略图是最后一手之前的样子 —— 日志能提供的最后一份，够用作纪念。
+   */
+  function lastLogValues(log) {
+    var moves = log && Array.isArray(log.moves) ? log.moves : [];
+    for (var i = moves.length - 1; i >= 0; i--) {
+      var values = moves[i] && Array.isArray(moves[i].v) ? moves[i].v : null;
+      if (values && values.length) return values;
+    }
+    return [];
+  }
+
+  /**
+   * 复盘抽屉的战报入参：落盘日志的 meta（当日最后一次结算的指标）+ 最后盘面。
+   * meta 缺失（旧日志 / 被写坏）时按记录现场补一份，不能让抽屉里的按钮点出空白卡。
+   * 每日挑战固定 4×4 经典，模式不取当前设置（玩家可能已经换了模式再来看复盘）。
+   */
+  function dailyReportData(stored, key) {
+    var store = loadDailyStore();
+    var record = Daily.bestOf(store, key);
+    var meta = stored && stored.meta && typeof stored.meta === 'object'
+      ? stored.meta
+      : reviewMetaOf(null, stored, record);
+    var values = lastLogValues(stored);
+
+    return {
+      date: key,
+      size: values.length || 4,
+      score: meta.score,
+      maxTile: meta.maxTile,
+      moves: meta.moves,
+      mode: 'classic',
+      daily: {
+        streak: Daily.streakOf(store, key).current,
+        attempt: record ? record.attempts : 0
+      },
+      achievements: achievementsSummary(),
+      values: values
+    };
+  }
+
+  /**
+   * 把战报下载成 PNG。
+   * 失败只写状态行：结算浮层还开着，绝不能因为下载失败打断结算流程。
+   * @param {?Blob} blob 已生成的图片
+   * @param {object} model 战报模型（文件名从这里取）
+   */
+  function downloadReportBlob(blob, model) {
+    if (!blob) {
+      setStatus('战报生成失败');
+      return;
+    }
+
+    var url = null;
+    var link = null;
+    try {
+      url = global.URL.createObjectURL(blob);
+      link = document.createElement('a');
+      link.href = url;
+      link.download = Report.fileName(model);
+      document.body.appendChild(link);
+      link.click();
+      setStatus('战报已保存 · ' + link.download);
+    } catch (err) {
+      setStatus('战报生成失败');
+    } finally {
+      if (link && link.parentNode) link.parentNode.removeChild(link);
+      if (url) {
+        global.setTimeout(function () {
+          global.URL.revokeObjectURL(url);
+        }, 1000);
+      }
+    }
+  }
+
+  /**
+   * 组装并下载一张战报。
+   * @param {Function} buildData 返回 buildModel 入参的函数（便于把取数一起包进 try）
+   */
+  function saveReport(buildData) {
+    if (!Report) {
+      setStatus('战报生成失败');
+      return;
+    }
+
+    var model;
+    try {
+      model = Report.buildModel(buildData());
+    } catch (err) {
+      setStatus('战报生成失败');
+      return;
+    }
+
+    var canvas;
+    try {
+      canvas = Report.render(model);
+    } catch (err) {
+      canvas = null;
+    }
+    if (!canvas) {
+      setStatus('战报生成失败');
+      return;
+    }
+
+    Report.toBlob(canvas).then(function (blob) {
+      downloadReportBlob(blob, model);
+    }, function () {
+      setStatus('战报生成失败');
+    });
+  }
+
+  /** 结算浮层的「保存战报」 */
+  function saveCurrentReport() {
+    saveReport(currentReportData);
+  }
+
+  /** 结算浮层的按钮项：调用方追加在既有按钮之后 */
+  function reportAction() {
+    return { label: '保存战报', onClick: saveCurrentReport };
+  }
+
+  /**
+   * 复盘正文底部追加「导出今日战报」。
+   * 只在今天确实有落盘日志时出现：进行中的空日志导不出有意义的东西，
+   * 与其给一个点了没反应的按钮，不如不渲染。
+   * @param {?object} stored 落盘的今日复盘
+   */
+  function appendReportEntry(stored) {
+    if (!els.reviewBody || !Report) return;
+    if (!stored || !Array.isArray(stored.moves) || !stored.moves.length) return;
+
+    var foot = document.createElement('div');
+    foot.className = 'review-foot';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.id = 'reviewReport';
+    btn.textContent = '导出今日战报';
+    btn.addEventListener('click', function () {
+      saveReport(function () {
+        return dailyReportData(stored, todayKey());
+      });
+    });
+
+    foot.appendChild(btn);
+    els.reviewBody.appendChild(foot);
+  }
+
   /* ---------- 浮层 ---------- */
 
   function showOverlay(tone, title, text, actions) {
@@ -2328,6 +2520,8 @@
       { label: '再来一局', onClick: restartSame }
     ];
     if (state.history.length) actions.push({ label: '撤销一步', onClick: undo });
+    // 战报排在既有按钮之后：结算的第一诉求仍是继续玩 / 重开
+    actions.push(reportAction());
 
     showOverlay(
       'win',
@@ -2339,22 +2533,28 @@
   }
 
   function showTimeOverlay() {
+    var actions = endingActions(state.history.length > 0);
+    actions.push(reportAction());
+
     showOverlay(
       'lose',
       '时间到',
       '本局 ' + state.score + ' 分，最大方块 ' + G.maxValue(state.board) + '，走了 ' +
         state.moves + ' 步。',
-      endingActions(state.history.length > 0)
+      actions
     );
   }
 
   function showStuckOverlay() {
+    var actions = endingActions(state.history.length > 0);
+    actions.push(reportAction());
+
     showOverlay(
       'lose',
       '走不动了',
       '棋盘上没有空格也没有可合并的方块。本局 ' + state.score + ' 分，最大方块 ' +
         G.maxValue(state.board) + '，走了 ' + state.moves + ' 步。',
-      endingActions(state.history.length > 0)
+      actions
     );
   }
 

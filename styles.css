@@ -1257,6 +1257,18 @@ body.is-sheet-open {
   color: var(--ink-faint);
 }
 
+/* 复盘底部的「导出今日战报」：与正文用一条细线隔开，按钮撑满面板宽度 */
+.review-foot {
+  margin: 16px 0 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.review-foot .btn {
+  width: 100%;
+  height: 36px;
+}
+
 /* ---------- 成就 ---------- */
 
 /* 成就面板比复盘宽一档：2 列卡片放到 420px 里会挤成两行小字 */
