@@ -2258,6 +2258,9 @@
     els.overlay.classList.toggle('is-win', tone === 'win');
     els.overlay.classList.toggle('is-lose', tone === 'lose');
     els.overlay.hidden = false;
+    // 浮层打开时把整个应用抬到粒子层之上（见 styles.css 的 body.is-overlay-open #fx）。
+    // 不移动 canvas：它一旦进 .app，震屏的 transform 会让 fixed 变成相对 .app 定位，粒子跟着抖。
+    document.body.classList.add('is-overlay-open');
 
     // 结算浮层是唯一的强提示：读屏用户如果不把焦点送进去，根本不知道这一局结束了。
     // 但抽屉开着时焦点必须留在玩家正在看的面板里，不能被背后的浮层抢走。
@@ -2273,6 +2276,7 @@
     // 焦点在浮层里的话，关掉后要还给棋盘，键盘玩家不必再 Tab 一遍
     var hadFocus = els.overlay.contains(document.activeElement);
     els.overlay.hidden = true;
+    document.body.classList.remove('is-overlay-open');
     if (hadFocus && els.board) els.board.focus();
   }
 

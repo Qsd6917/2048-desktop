@@ -623,10 +623,41 @@ async function main() {
   const winPixels = await waitForPixels(1500);
   check('通关时彩带真的画在粒子层上', winPixels > 0, 'alpha px=' + winPixels);
 
+  // 彩带在滑行动画后就开撒，浮层要等动画收尾才弹：先等浮层真的打开再断言层叠
+  for (let i = 0; i < 30 && (await hidden('#overlay')); i++) await wait(100);
+
+  // 彩带在飞的同时，浮层文字必须压在粒子之上（M2 的层叠回归）
+  const stack = JSON.parse(await evalJs(`(function () {
+    var canvas = document.getElementById('fx');
+    var title = document.getElementById('overlayTitle');
+    var rect = title.getBoundingClientRect();
+    var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return JSON.stringify({
+      overlayOpen: !document.getElementById('overlay').hidden,
+      bodyClass: document.body.classList.contains('is-overlay-open'),
+      z: getComputedStyle(canvas).zIndex,
+      hitTag: hit ? hit.tagName : null
+    });
+  })()`));
+
+  check('浮层打开时 #fx 降到 0 层（应用抬到粒子之上）',
+    stack.overlayOpen === true && stack.z === '0', stack.z);
+  check('浮层打开时 body 挂上 is-overlay-open', stack.bodyClass === true);
+  check('浮层标题中心取到的不是 canvas', stack.hitTag !== 'CANVAS', String(stack.hitTag));
+
   await click('#newGame');
   await wait(200);
   const afterRestart = await fxPixels();
   check('点「新游戏」后上一局特效被清空', afterRestart === 0, 'alpha px=' + afterRestart);
+
+  const zState = JSON.parse(await evalJs(`(function () {
+    return JSON.stringify({
+      z: getComputedStyle(document.getElementById('fx')).zIndex,
+      bodyClass: document.body.classList.contains('is-overlay-open')
+    });
+  })()`));
+  check('浮层关闭后 #fx 回到 40 层', zState.z === '40', zState.z);
+  check('浮层关闭后 body 的类也摘掉', zState.bodyClass === false);
 
   /* ---------- T6 四模块联动冒烟 ---------- */
   console.log('\n[T6] 四模块联动：一步合并打穿四个模块');
