@@ -246,6 +246,9 @@
       shake: noop,
       resize: noop,
       stop: noop,
+      setReduceMotion: function (on) {
+        reduceMotion = on === true;
+      },
       stats: function () {
         return { particles: 0, rings: 0, sweeps: 0, running: false, reduceMotion: reduceMotion };
       }
@@ -522,6 +525,22 @@
       ctx.clearRect(0, 0, width, height);
     }
 
+    /**
+     * 运行时切换「减少动态效果」。
+     *
+     * 系统偏好可以在页面开着时改（Windows 的动画开关、macOS 的辅助功能），
+     * 只在 create 时读一次会让 CSS 停了、粒子继续跑。切到 reduce 时立刻
+     * 停循环、清池、摘掉震屏，已经飞出去的彩带不能继续盖在结算文字上。
+     *
+     * @param {boolean} on 是否开启减少动态效果
+     */
+    function setReduceMotion(on) {
+      var next = on === true;
+      if (next === reduceMotion) return;
+      reduceMotion = next;
+      if (next) stop();
+    }
+
     function stats() {
       return {
         particles: particles.length,
@@ -546,6 +565,22 @@
       if (particles.length || rings.length || sweeps.length) ensureLoop();
     });
 
+    // 系统偏好运行中切换要立刻落地：CSS 的媒体查询会即时生效，
+    // 粒子与震屏不能等到下一次 create 才跟上。
+    var motionQuery = typeof win.matchMedia === 'function'
+      ? win.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
+    if (motionQuery) {
+      var onMotionPreferenceChange = function (event) {
+        setReduceMotion(event && event.matches === true);
+      };
+      if (typeof motionQuery.addEventListener === 'function') {
+        motionQuery.addEventListener('change', onMotionPreferenceChange);
+      } else if (typeof motionQuery.addListener === 'function') {
+        motionQuery.addListener(onMotionPreferenceChange);   // 老 Safari 只有 addListener
+      }
+    }
+
     return {
       burst: burst,
       confetti: confetti,
@@ -555,6 +590,7 @@
       shake: shake,
       resize: resize,
       stop: stop,
+      setReduceMotion: setReduceMotion,
       stats: stats
     };
   }

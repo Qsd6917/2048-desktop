@@ -24,6 +24,18 @@
   var POP_MS = 175;      // 合成块弹出动画时长，必须和 .tile__inner.anim-merge 一致
   var STAGGER_MS = 60;   // renderBoard 逐个入场的间隔（新局两个方块错开出现）
   var DEFAULT_SIZE = 4;
+  /** reduce 下动画是瞬时完成的，等待收尾只留一个宏任务的余量，不再锁 285ms */
+  var REDUCED_WAIT_MS = 1;
+
+  /**
+   * 现读系统偏好，不在模块加载时缓存。
+   *
+   * 玩家可以在页面开着时切换「减少动态效果」：CSS 会立刻停掉过渡，
+   * 控制器这边如果还按 285ms 等，输入就会在「没有动画」的情况下被白锁。
+   */
+  function prefersReducedMotion() {
+    return !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
 
   /**
    * 创建一个渲染器实例。
@@ -305,6 +317,10 @@
       var moveOpts = moveOptions || {};
       var animate = moveOpts.animate !== false;
       var gen = generation;
+      // reduce：位置照写（棋盘状态必须正确），只是不等过渡跑完
+      var reduced = animate && prefersReducedMotion();
+      var slideDelay = reduced ? REDUCED_WAIT_MS : SLIDE_MS;
+      var settleDelay = reduced ? REDUCED_WAIT_MS : SLIDE_MS + POP_MS;
 
       // 1. 先让方块滑到目标格。computeMove 的 slides 里含「原地不动」的项
       //    （from === to），必须靠节点当前坐标过滤掉，否则每次都跑一遍空动画。
@@ -320,7 +336,7 @@
       // 2. 合成出来的新块立刻建好但延迟出场，滑动结束的瞬间才亮起
       var merges = result.merges || [];
       for (var m = 0; m < merges.length; m++) {
-        mountTile(merges[m].tile, animate ? { merged: true, delay: SLIDE_MS } : { instant: true });
+        mountTile(merges[m].tile, animate ? { merged: true, delay: slideDelay } : { instant: true });
       }
 
       // 3. 被合并掉的源块等滑动结束后再移除
@@ -335,7 +351,7 @@
 
       // 4. 落一个新子
       if (result.spawned) {
-        mountTile(result.spawned, animate ? { delay: SLIDE_MS } : { instant: true });
+        mountTile(result.spawned, animate ? { delay: slideDelay } : { instant: true });
       }
 
       // 5. 棋盘上新增的障碍（模式玩法用；本任务不会触发，接口先留好）
@@ -366,13 +382,13 @@
         global.setTimeout(function () {
           if (gen !== generation) return;   // 期间被清空过，节点已经没了
           removeConsumed();
-        }, SLIDE_MS);
+        }, slideDelay);
 
         // 滑动 + 弹出都结束：收尾。过期的一律按「取消」处理，保证 Promise 一定能 resolve
         global.setTimeout(function () {
           if (entry.settled) return;        // clear() 已经替它 settle 过了
           entry.settle(gen === generation);
-        }, SLIDE_MS + POP_MS);
+        }, settleDelay);
       });
     }
 

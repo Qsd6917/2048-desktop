@@ -1599,6 +1599,12 @@ body.is-overlay-open #fx {
     transition: none;
   }
 
+  /* 抽屉的淡入 + 滑入整段去掉：reduce 下不该有任何位移感 */
+  .sheet,
+  .sheet__panel {
+    animation: none;
+  }
+
   /* 减少动态效果：震屏整段取消（粒子层本身在 fx.create 里已经是空操作） */
   .app.is-shaking {
     animation: none;

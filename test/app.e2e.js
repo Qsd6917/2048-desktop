@@ -625,12 +625,29 @@ async function main() {
     callsSmall.length === 1 && callsSmall[0].accent === false,
     JSON.stringify(callsSmall));
 
+  // 先建一个「未开启 reduce」的实例并真的撒出粒子：下一段验证运行中切换偏好
+  const runtimeBefore = JSON.parse(await evalJs(`(function () {
+    window.__fxLive = Game2048Fx.create({ canvas: document.createElement('canvas') });
+    window.__fxLive.burst(Game2048Fx.planBurst({ value: 2048, x: 10, y: 10 }));
+    return JSON.stringify(window.__fxLive.stats());
+  })()`));
+  check('切换偏好前粒子正常发射',
+    runtimeBefore.particles > 0 && runtimeBefore.reduceMotion === false,
+    JSON.stringify(runtimeBefore));
+
   // 强制「减少动态效果」：与 app.js 一样按 matchMedia 建实例，再触发 burst
   await send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
   });
   check('系统偏好已强制为 reduce',
     (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === true);
+
+  await wait(120);
+  const runtimeAfter = JSON.parse(await evalJs('JSON.stringify(window.__fxLive.stats())'));
+  check('运行中切到 reduce：已在飞的粒子立刻清空',
+    runtimeAfter.reduceMotion === true && runtimeAfter.particles === 0 && runtimeAfter.running === false,
+    JSON.stringify(runtimeAfter));
+  await evalJs('window.__fxLive.stop(), delete window.__fxLive, 1');
 
   const reducedStats = JSON.parse(await evalJs(`(function () {
     window.__fxProbe = Game2048Fx.create({
@@ -649,6 +666,15 @@ async function main() {
     JSON.stringify(reducedStats));
   check('reduce 下 rAF 不启动', reducedStats.running === false);
   await evalJs('window.__fxProbe.stop(), delete window.__fxProbe, 1');
+
+  // reduce 下 renderer.playMove 只等 1ms：连按两下不该被 285ms 的 busy 卡住
+  await loadBoard(BOARD_RIGHT_COL, 'classic');
+  await press('ArrowLeft');
+  await wait(30);
+  await press('ArrowDown');
+  await wait(180);
+  check('reduce 下输入不再被动画等待锁住（180ms 内走完两步）',
+    (await statusMoves()) === 2, '已走 ' + (await statusMoves()) + ' 步');
 
   await send('Emulation.setEmulatedMedia', { features: [] });
   check('媒体模拟已撤销',

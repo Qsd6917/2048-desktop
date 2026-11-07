@@ -659,6 +659,35 @@ async function main() {
   check('浮层关闭后 #fx 回到 40 层', zState.z === '40', zState.z);
   check('浮层关闭后 body 的类也摘掉', zState.bodyClass === false);
 
+  /* ---------- T5c reduce 下抽屉没有入场动画 ---------- */
+  console.log('\n[T5c] reduce-motion：抽屉不做淡入/滑入');
+
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+  });
+  await click('#reviewOpen');
+  await wait(80);
+
+  const sheetAnim = JSON.parse(await evalJs(`(function () {
+    var sheet = document.getElementById('reviewSheet');
+    var panel = sheet.querySelector('.sheet__panel');
+    return JSON.stringify({
+      open: !sheet.hidden,
+      sheetName: getComputedStyle(sheet).animationName,
+      panelName: getComputedStyle(panel).animationName
+    });
+  })()`));
+  check('reduce 下抽屉照常打开', sheetAnim.open === true);
+  check('reduce 下 .sheet 的 animation-name 为 none',
+    sheetAnim.sheetName === 'none', sheetAnim.sheetName);
+  check('reduce 下 .sheet__panel 的 animation-name 为 none',
+    sheetAnim.panelName === 'none', sheetAnim.panelName);
+
+  await press('Escape');
+  await wait(150);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  check('撤销 reduce 模拟后抽屉已关闭', (await hidden('#reviewSheet')) === true);
+
   /* ---------- T6 四模块联动冒烟 ---------- */
   console.log('\n[T6] 四模块联动：一步合并打穿四个模块');
 
