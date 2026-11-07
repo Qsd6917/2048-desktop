@@ -25,6 +25,7 @@
   var Rng = global.Game2048Rng;
   var Daily = global.Game2048Daily;
   var Review = global.Game2048Review;
+  var Achievements = global.Game2048Achievements;
   var Fx = global.Game2048Fx;
 
   /* ---------- 常量 ---------- */
@@ -65,6 +66,10 @@
   var COMBO_FX_AT = 3;
   /** 大块合并的门槛：到这个值，音频加高八度、视觉加环与震屏 */
   var ACCENT_VALUE = 256;
+  /** 成就解锁提示：同屏最多几条 */
+  var TOAST_LIMIT = 3;
+  /** 成就解锁提示的停留时长 */
+  var TOAST_MS = 4000;
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -120,7 +125,12 @@
     reviewOpen: document.getElementById('reviewOpen'),
     reviewSheet: document.getElementById('reviewSheet'),
     reviewClose: document.getElementById('reviewClose'),
-    reviewBody: document.getElementById('reviewBody')
+    reviewBody: document.getElementById('reviewBody'),
+    achOpen: document.getElementById('achOpen'),
+    achSheet: document.getElementById('achSheet'),
+    achClose: document.getElementById('achClose'),
+    achBody: document.getElementById('achBody'),
+    achToasts: document.getElementById('achToasts')
   };
 
   var renderer = Renderer.create({
@@ -171,6 +181,17 @@
 
   var stats = Storage.loadStats();
 
+  /**
+   * 成就档案（Task 4）。与 stats 刻意分开存：stats 是历史战绩，
+   * 这里是成就口径的累计指标，任何一边被写坏都不会污染另一边。
+   * 模块缺失时保持 null，所有入口都先判空。
+   */
+  var profile = Achievements
+    ? Achievements.normalizeProfile(Storage.get(Storage.KEYS.profile, null))
+    : null;
+  /** 档案有改动但还没落盘；批量落盘靠它避免同一次操作写多遍 */
+  var profileDirty = false;
+
   var state = {
     board: null,
     score: 0,
@@ -207,6 +228,8 @@
     dailyRecordedMoves: 0,
     /** 本局是否用过撤销（结果类成就用，暂不落盘） */
     undoUsed: false,
+    /** 本局已计入 perfectMoves 的「与 AI 一致步数」，结算两次只补增量 */
+    perfectRecorded: 0,
     /** 本局复盘日志（每日局才建；普通局为 null） */
     reviewLog: null,
     /** 连击数：本步有合并则 +1，无合并步或空档超时清零 */
@@ -235,6 +258,8 @@
   var evalTimerIsIdle = false;
   /** 打开复盘抽屉前的焦点，关闭时归还 */
   var reviewReturnFocus = null;
+  /** 打开成就面板前的焦点，关闭时归还 */
+  var achReturnFocus = null;
 
   /* ---------- 小工具 ---------- */
 
@@ -258,9 +283,9 @@
     if (els.status) els.status.textContent = text;
   }
 
-  /** 动画中、结算浮层挡住棋盘、复盘抽屉开着、或这一局已经结束时，都不接受新输入 */
+  /** 动画中、结算浮层挡住棋盘、抽屉开着、或这一局已经结束时，都不接受新输入 */
   function isLocked() {
-    return state.over || state.busy || !els.overlay.hidden || isReviewOpen();
+    return state.over || state.busy || !els.overlay.hidden || isReviewOpen() || isAchOpen();
   }
 
   /** 毫秒 -> mm:ss（向上取整，这样 180000 显示 03:00 而不是 02:59） */
@@ -562,14 +587,19 @@
 
     flushEvalQueue({ budgetMs: FLUSH_BUDGET_MS });
 
+    var summary = Review.summarize(state.reviewLog, meta);
+
     Storage.set(Storage.KEYS.review + '.' + state.dailyKey, {
       version: state.reviewLog.version,
       date: state.reviewLog.date,
       moves: state.reviewLog.moves,
-      summary: Review.summarize(state.reviewLog, meta),
+      summary: summary,
       // meta 不属于 summarize 的返回值，但刷新后要还原指标行，跟着日志一起存
       meta: meta
     });
+
+    // 成就口径的「与 AI 一致步数」跟复盘同一时机入账（内部按本局增量补差）
+    recordReviewAchievements(summary);
 
     // 继续挑战会接着这局玩：日志与未算完的队列都留着继续累积。
     // 最终结算同样不在这里清空 —— 只有开新局 / 换每日 / 撤销才会重置或裁剪。
@@ -793,6 +823,240 @@
   /** 复盘抽屉是否开着；开着时锁住棋盘输入与托管 */
   function isReviewOpen() {
     return !!els.reviewSheet && els.reviewSheet.hidden === false;
+  }
+
+  /* ---------- 成就 ---------- */
+
+  /** 解锁日期文案：时间戳 -> YYYY-MM-DD（本地时区） */
+  function stampLabel(stamp) {
+    var date = new Date(stamp);
+    if (!isFinite(date.getTime())) return '—';
+
+    var month = date.getMonth() + 1;
+    var day = date.getDate();
+    return date.getFullYear() + '-' + (month < 10 ? '0' : '') + month + '-' +
+      (day < 10 ? '0' : '') + day;
+  }
+
+  /** 成就入口按钮上的计数：x/25 */
+  function renderAchCount() {
+    if (!els.achOpen || !Achievements || !profile) return;
+    els.achOpen.textContent = '成就 ' + Achievements.countUnlocked(profile) + '/' +
+      Achievements.DEFINITIONS.length;
+  }
+
+  /** 一张成就卡片：解锁显示日期，锁定显示进度条（aria-disabled 但仍可聚焦） */
+  function achCardHtml(def) {
+    var unlockedAt = profile.unlocked[def.id];
+    var isUnlocked = typeof unlockedAt === 'number';
+    var parts = [];
+
+    parts.push('<article class="ach-card' + (isUnlocked ? ' is-unlocked' : '') + '"' +
+      ' tabindex="0"' + (isUnlocked ? '' : ' aria-disabled="true"') + '>');
+    parts.push('<header class="ach-card__head">');
+    parts.push('<span class="ach-tier ach-tier--' + escapeHtml(def.tier) + '">' +
+      escapeHtml(Achievements.TIERS[def.tier] || '') + '</span>');
+    parts.push('<span class="ach-card__name">' + escapeHtml(def.name) + '</span>');
+    parts.push('</header>');
+    parts.push('<p class="ach-card__desc">' + escapeHtml(def.desc) + '</p>');
+
+    if (isUnlocked) {
+      parts.push('<p class="ach-card__date">解锁于 ' + escapeHtml(stampLabel(unlockedAt)) + '</p>');
+    } else {
+      var progress = Achievements.progressOf(def, profile.stats);
+      var percent = Math.round(progress.ratio * 100);
+      parts.push('<div class="ach-progress" role="progressbar" aria-valuemin="0"' +
+        ' aria-valuemax="' + progress.target + '" aria-valuenow="' + progress.current +
+        '" aria-label="' + escapeHtml(def.name) + '进度">');
+      parts.push('<span class="ach-progress__fill" style="width:' + percent + '%"></span>');
+      parts.push('</div>');
+      // 达成即解锁，所以锁定的卡片 current 一定小于 target，直接显示原始值
+      parts.push('<p class="ach-progress__text">' + progress.current + ' / ' +
+        progress.target + '</p>');
+    }
+
+    parts.push('</article>');
+    return parts.join('');
+  }
+
+  function renderAchSheet() {
+    if (!els.achBody || !Achievements || !profile) return;
+
+    var total = Achievements.DEFINITIONS.length;
+    var cards = [];
+
+    for (var i = 0; i < total; i++) cards.push(achCardHtml(Achievements.DEFINITIONS[i]));
+
+    els.achBody.innerHTML =
+      '<div class="ach-summary">' +
+        '<span class="ach-summary__count">已解锁 ' +
+          Achievements.countUnlocked(profile) + ' / ' + total + '</span>' +
+        '<span class="ach-summary__hint">累计指标 · 跨局保留</span>' +
+      '</div>' +
+      '<div class="ach-grid">' + cards.join('') + '</div>';
+  }
+
+  function openAchievements() {
+    if (!els.achSheet) return;
+
+    stopCountdown();   // 与复盘一致：面板开着时不计时，避免背面被判超时
+    achReturnFocus = document.activeElement;
+    renderAchSheet();
+    els.achSheet.hidden = false;
+    document.body.classList.add('is-sheet-open');
+    if (els.achClose) els.achClose.focus();
+  }
+
+  function closeAchievements() {
+    if (!els.achSheet || els.achSheet.hidden) return;
+
+    els.achSheet.hidden = true;
+    document.body.classList.remove('is-sheet-open');
+    // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
+    startCountdown();
+
+    var target = achReturnFocus;
+    achReturnFocus = null;
+    if (target && target !== document.body && typeof target.focus === 'function' &&
+        document.contains(target)) {
+      target.focus();
+    } else if (els.achOpen) {
+      els.achOpen.focus();
+    }
+  }
+
+  /** 成就面板是否开着；开着时锁住棋盘输入与托管 */
+  function isAchOpen() {
+    return !!els.achSheet && els.achSheet.hidden === false;
+  }
+
+  /** 一条解锁提示：点击打开成就面板，4s 后自己消失 */
+  function showAchievementToast(def) {
+    if (!els.achToasts || !def) return;
+
+    // 同屏只留最新的 3 条：一次解锁很多条时优先看到最后解锁的
+    while (els.achToasts.children.length >= TOAST_LIMIT) {
+      els.achToasts.removeChild(els.achToasts.firstChild);
+    }
+
+    var toast = document.createElement('button');
+    toast.type = 'button';
+    toast.className = 'toast toast--' + def.tier;
+    toast.innerHTML =
+      '<span class="toast__tier ach-tier ach-tier--' + escapeHtml(def.tier) + '">' +
+        escapeHtml(Achievements.TIERS[def.tier] || '') + '</span>' +
+      '<span class="toast__text">' +
+        '<strong>' + escapeHtml(def.name) + '</strong>' +
+        '<small>' + escapeHtml(def.desc) + '</small>' +
+      '</span>';
+    toast.addEventListener('click', openAchievements);
+
+    els.achToasts.appendChild(toast);
+
+    global.setTimeout(function () {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, TOAST_MS);
+  }
+
+  /** 新一轮解锁：音效与彩带每批只播一次，提示最多 3 条 */
+  function announceUnlocks(ids) {
+    if (!ids || !ids.length) return;
+
+    Audio.achievement();
+    if (fx) fx.confetti(60);
+
+    var limit = Math.min(ids.length, TOAST_LIMIT);
+    for (var i = 0; i < limit; i++) {
+      var def = Achievements.findById(ids[i]);
+      if (def) showAchievementToast(def);
+    }
+  }
+
+  function commitProfile() {
+    if (!profileDirty || !profile) return;
+    Storage.set(Storage.KEYS.profile, profile);
+    profileDirty = false;
+  }
+
+  /**
+   * 统计入口：合并增量 -> 结算新解锁 -> 落盘 -> 刷新入口计数 -> 播提示。
+   * 所有成就统计都必须从这里走，避免某条路径漏掉 evaluate。
+   */
+  function applyProfile(patch) {
+    if (!Achievements || !profile) return;
+
+    profile = Achievements.addStats(profile, patch);
+    profileDirty = true;
+
+    var result = Achievements.evaluate(profile, Date.now());
+    profile = result.profile;
+
+    commitProfile();
+    renderAchCount();
+    announceUnlocks(result.unlockedNow);
+  }
+
+  /** 走一步：合并组数累加，单步最多合并数与连击只取历史最大 */
+  function recordMoveAchievements(mergeCount, combo) {
+    var merges = countOf(mergeCount);
+    applyProfile({
+      merges: merges,
+      maxMergesInMove: merges,
+      maxCombo: countOf(combo)
+    });
+  }
+
+  /**
+   * 一局入账，与 recordGame 同一口径：
+   *   games / sizes / wins / modeWins 只在首次入账时 +1，
+   *   bestScore / bestTile / totalMoves 跟着「继续挑战」的增量推进。
+   */
+  function recordGameAchievements(firstTime, extraMoves, tile) {
+    if (!firstTime && extraMoves <= 0) return;
+
+    var patch = { bestScore: state.score, bestTile: countOf(tile) };
+    if (firstTime) patch.games = 1;
+    if (extraMoves > 0) patch.totalMoves = extraMoves;
+
+    if (firstTime) {
+      patch.sizes = {};
+      patch.sizes[String(settings.size)] = 1;
+
+      if (state.won) {
+        patch.wins = 1;
+        patch.modeWins = {};
+        patch.modeWins[settings.mode] = 1;
+        if (!state.undoUsed) patch.undoWins = 1;
+      }
+    }
+
+    applyProfile(patch);
+  }
+
+  /** 进入每日挑战：dailyPlays +1，连续天数取「今天往回数」的结果（只增不减） */
+  function recordDailyStartAchievements(streak) {
+    applyProfile({ dailyPlays: 1, dailyStreak: countOf(streak) });
+  }
+
+  /** 每日挑战达成目标；由 recordDailyResult 的 finish 闸门保证一局只加一次 */
+  function recordDailyWinAchievements() {
+    applyProfile({ dailyWins: 1 });
+  }
+
+  /**
+   * 复盘汇总落盘时累加「与 AI 一致步数」。
+   * 同一局可能结算两次（达成目标 + 最终结算），所以按本局已计入的数量补差；
+   * 同一天多打几局则各自实际累加，不做跨局去重。
+   */
+  function recordReviewAchievements(summary) {
+    if (!summary) return;
+
+    var matched = countOf(summary.matched);
+    var delta = matched - state.perfectRecorded;
+    if (delta <= 0) return;
+
+    state.perfectRecorded = matched;
+    applyProfile({ perfectMoves: delta });
   }
 
   /* ---------- 渲染 ---------- */
@@ -1052,7 +1316,11 @@
     settings.mode = 'classic';
     persistSettings();
 
-    saveDailyStore(Daily.startAttempt(loadDailyStore(), state.dailyKey, Date.now()));
+    var store = loadDailyStore();
+    store = Daily.startAttempt(store, state.dailyKey, Date.now());
+    saveDailyStore(store);
+    // 提前把今天算进连续天数：连续记录只增不减，断签风险由每日条另行提示
+    recordDailyStartAchievements(Daily.streakOf(store, state.dailyKey).current);
 
     startNewGame({ keepDaily: true });
     if (fx) fx.sweep();
@@ -1088,6 +1356,7 @@
     state.dailyRecorded = false;
     state.dailyRecordedMoves = 0;
     state.undoUsed = false;
+    state.perfectRecorded = 0;
     // 连击属于「这一局的手感」，换局一律从头数
     resetCombo();
     if (!keepDaily) {
@@ -1195,6 +1464,9 @@
 
     Storage.saveStats(stats);
 
+    // 成就按 recordGame 的同一口径入账：首次记局数，之后只补增量
+    recordGameAchievements(firstTime, extraMoves, tile);
+
     // 每日战绩与统计同一时机入账：首次结算记 finish，继续挑战后的每次增量结算
     // 把本局最新的分数/步数/最大块补进去。
     recordDailyResult();
@@ -1223,6 +1495,8 @@
 
     if (countFinish) state.dailyRecorded = true;
     state.dailyRecordedMoves = state.moves;
+    // 每日达标只跟 finish 闸门走：继续挑战后的增量结算不再重复计数
+    if (countFinish && state.won) recordDailyWinAchievements();
     renderDailyBar();
   }
 
@@ -1329,6 +1603,7 @@
     // 复盘要的是「这一步之前」的盘面，必须赶在接管 result.board 之前取
     var valuesBefore = G.toValues(state.board);
     var combo = bumpCombo(result.merges.length > 0);
+    recordMoveAchievements(result.merges.length, combo);
 
     pushHistory();
 
@@ -1752,6 +2027,15 @@
       return;
     }
 
+    // 成就面板同理：只认 Esc，棋盘输入等关掉之后再说
+    if (isAchOpen()) {
+      if (key === 'escape') {
+        event.preventDefault();
+        closeAchievements();
+      }
+      return;
+    }
+
     var withModifier = event.ctrlKey || event.metaKey;
 
     if (withModifier && key === 'z') {
@@ -1833,6 +2117,14 @@
       });
     }
 
+    if (els.achOpen) els.achOpen.addEventListener('click', openAchievements);
+    if (els.achClose) els.achClose.addEventListener('click', closeAchievements);
+    if (els.achSheet) {
+      els.achSheet.addEventListener('click', function (event) {
+        if (event.target === els.achSheet) closeAchievements();
+      });
+    }
+
     bindChoiceGroup(els.sizeGroup, 'size', setSize);
     bindChoiceGroup(els.modeGroup, 'mode', setMode);
 
@@ -1857,6 +2149,7 @@
     stats = Storage.loadStats();
 
     bindControls();
+    renderAchCount();
     global.setInterval(ensureDailyFresh, DAILY_CHECK_MS);
 
     var saved = readSaved();
