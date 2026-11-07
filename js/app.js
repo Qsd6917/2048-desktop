@@ -960,8 +960,9 @@
     };
 
     renderReview(log, summary, Review.analyze(summary, ctx), ctx);
-    // 落在正文末尾：只有今天有落盘日志时才有这个按钮
-    appendReportEntry(stored);
+    // 入口与正文同源：渲染的是哪份日志，导出的就是哪份。
+    // live 用当前棋盘的盘面，落盘用日志里能还原的最后一份。
+    appendReportEntry(log, meta, !!liveLog);
   }
 
   /** 渲染失败时的兜底内容：抽屉照常打开，玩家能关掉它，计时就会恢复 */
@@ -2321,17 +2322,19 @@
   }
 
   /**
-   * 复盘抽屉的战报入参：落盘日志的 meta（当日最后一次结算的指标）+ 最后盘面。
-   * meta 缺失（旧日志 / 被写坏）时按记录现场补一份，不能让抽屉里的按钮点出空白卡。
+   * 复盘抽屉的战报入参。
+   *
+   * meta 与 values 由调用方从「当前正在渲染的那份日志」取：进行中的局取内存 meta 与
+   * 当前棋盘，落盘日志取落盘 meta 与日志里能还原的盘面。这里只补当天的每日口径。
    * 每日挑战固定 4×4 经典，模式不取当前设置（玩家可能已经换了模式再来看复盘）。
+   *
+   * @param {{score:number, moves:number, maxTile:number}} meta 本局指标
+   * @param {number[][]} values 与 meta 同一局的盘面
    */
-  function dailyReportData(stored, key) {
+  function reviewReportData(meta, values) {
+    var key = todayKey();
     var store = loadDailyStore();
     var record = Daily.bestOf(store, key);
-    var meta = stored && stored.meta && typeof stored.meta === 'object'
-      ? stored.meta
-      : reviewMetaOf(null, stored, record);
-    var values = lastLogValues(stored);
 
     return {
       date: key,
@@ -2431,13 +2434,22 @@
 
   /**
    * 复盘正文底部追加「导出今日战报」。
-   * 只在今天确实有落盘日志时出现：进行中的空日志导不出有意义的东西，
-   * 与其给一个点了没反应的按钮，不如不渲染。
-   * @param {?object} stored 落盘的今日复盘
+   *
+   * 与正文同源：抽屉里渲染的是哪份日志（进行中的 live 或落盘的 stored），
+   * 导出的就是哪份 —— 否则玩家看着进行中的盘面，存下来却是上一局的卡。
+   * 没有步数、或盘面还原不出来时不渲染：与其给一个点了没反应的按钮，不如不出现。
+   *
+   * @param {object} log 当前渲染的日志
+   * @param {object} meta 与该日志配套的本局指标
+   * @param {boolean} isLive 是否是进行中的内存日志
    */
-  function appendReportEntry(stored) {
+  function appendReportEntry(log, meta, isLive) {
     if (!els.reviewBody || !Report) return;
-    if (!stored || !Array.isArray(stored.moves) || !stored.moves.length) return;
+    if (!log || !Array.isArray(log.moves) || !log.moves.length) return;
+
+    // live 取当前棋盘；落盘日志取它记录的最后一份盘面。取不到就不给入口。
+    var values = isLive ? (state.board ? G.toValues(state.board) : []) : lastLogValues(log);
+    if (!values.length) return;
 
     var foot = document.createElement('div');
     foot.className = 'review-foot';
@@ -2449,7 +2461,7 @@
     btn.textContent = '导出今日战报';
     btn.addEventListener('click', function () {
       saveReport(function () {
-        return dailyReportData(stored, todayKey());
+        return reviewReportData(meta, values);
       });
     });
 

@@ -197,8 +197,11 @@
         // 普通局没有每日挑战口径，用「—」而不是「0 天」，避免读成「断签」
         { label: '连续天数', value: daily ? formatNumber(streak) : '—' }
       ],
+      // attempt 缺失 / 为 0 时只写「每日挑战」：不能出现「第 0 次」这种读不通的页脚
       footer: daily
-        ? '2048 桌面版 · 每日挑战 第 ' + attempt + ' 次'
+        ? (attempt > 0
+            ? '2048 桌面版 · 每日挑战 第 ' + attempt + ' 次'
+            : '2048 桌面版 · 每日挑战')
         : '2048 桌面版 · ' + modeLabel + '模式',
       thumb: { size: size, values: values },
       date: dateKey,

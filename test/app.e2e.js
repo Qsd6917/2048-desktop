@@ -207,6 +207,30 @@ async function main() {
     return m ? Number(m[1]) : null;
   }
 
+  /**
+   * 等状态行命中正则。
+   * 战报下载要等 canvas.toBlob 的异步回调，固定 sleep 在慢机上会踩线；
+   * 这里每 50ms 轮询一次，最多等 2s，超时返回最后一帧（由断言决定红绿）。
+   *
+   * @param {RegExp} pattern 期望的状态行
+   * @param {string} [before] 点击前的状态行；命中这条旧文案就继续等，
+   *        否则会读到上一条「战报已保存」，把没更新的那次当成成功
+   * @param {number} [timeoutMs] 超时上限，默认 2000
+   * @returns {Promise<string>} 最后一次读到的状态行
+   */
+  async function waitStatus(pattern, before, timeoutMs) {
+    const limit = typeof timeoutMs === 'number' ? timeoutMs : 2000;
+    const stale = before === undefined ? '' : String(before);
+    const deadline = Date.now() + limit;
+    let last = '';
+    while (Date.now() < deadline) {
+      last = (await text('#status')) || '';
+      if (last !== stale && pattern.test(last)) return last;
+      await wait(50);
+    }
+    return last;
+  }
+
   async function reload() {
     await send('Page.reload', { ignoreCache: true });
     for (let i = 0; i < 60; i++) {
@@ -1302,6 +1326,7 @@ async function main() {
   check('「保存战报」排在既有按钮之后', overlayLabels[overlayLabels.length - 1] === '保存战报',
     overlayLabels.join(' / '));
 
+  const beforeSave = await text('#status');
   await evalJs(`(function () {
     var buttons = document.querySelectorAll('#overlayActions button');
     for (var i = 0; i < buttons.length; i++) {
@@ -1309,12 +1334,11 @@ async function main() {
     }
     return 0;
   })()`);
-  await wait(700);
-  const saveStatus = await text('#status');
+  const saveStatus = await waitStatus(/战报已保存/, beforeSave);
   check('点击「保存战报」不写失败文案', saveStatus.indexOf('战报生成失败') < 0, saveStatus);
   check('点击后状态行给出文件名', /战报已保存 · 2048-\d{8}-\d+\.png/.test(saveStatus || ''), saveStatus);
 
-  // 真实绘制：页面内走完整的 buildModel -> render -> toDataURL，再采样中心区域
+  // 真实绘制：页面内走完整的 buildModel -> render -> toDataURL，再采样三块区域
   const probe = JSON.parse(await evalJs(`(function () {
     var model = Game2048Report.buildModel({
       date: '2026-11-07', size: 4, score: 123456, maxTile: 1024, moves: 88,
@@ -1331,23 +1355,30 @@ async function main() {
 
     var data = canvas.toDataURL('image/png');
     var ctx = canvas.getContext('2d');
-    var pixels = ctx.getImageData(
-      Math.floor(canvas.width / 2) - 50,
-      Math.floor(canvas.height / 2) - 50,
-      100, 100
-    ).data;
-    var seen = {};
-    var colors = 0;
-    for (var i = 0; i < pixels.length; i += 4) {
-      var key = pixels[i] + ',' + pixels[i + 1] + ',' + pixels[i + 2];
-      if (!seen[key]) { seen[key] = 1; colors++; }
+
+    // 一块 100×100 区域里的颜色种数：>1 说明这块真的画了东西（不是纯底色）
+    function colorCount(x, y) {
+      var pixels = ctx.getImageData(x, y, 100, 100).data;
+      var seen = {};
+      var count = 0;
+      for (var i = 0; i < pixels.length; i += 4) {
+        var key = pixels[i] + ',' + pixels[i + 1] + ',' + pixels[i + 2];
+        if (!seen[key]) { seen[key] = 1; count++; }
+      }
+      return count;
     }
+
     return JSON.stringify({
       ok: true,
       width: canvas.width,
       height: canvas.height,
       length: data.length,
-      colors: colors,
+      // 棋盘中心：方块层
+      colors: colorCount(Math.floor(canvas.width / 2) - 50, Math.floor(canvas.height / 2) - 50),
+      // 标题区：drawTexts 的标题 / 副标题（96,88 对应 CSS 48,44）
+      titleColors: colorCount(96, 88),
+      // 统计区：第一格「分数」的标签与数值（110,1360 对应 CSS 55,680）
+      statsColors: colorCount(110, 1360),
       name: Game2048Report.fileName(model)
     });
   })()`));
@@ -1356,6 +1387,10 @@ async function main() {
     probe.height === 1920, probe.width + '×' + probe.height);
   check('toDataURL 长度 > 5000（真的画了内容）', probe.length > 5000, 'len=' + probe.length);
   check('中心 100×100 区域不是纯色', probe.colors > 1, probe.colors + ' 种颜色');
+  check('标题区 100×100 不是纯色（文字层真的画了）', probe.titleColors > 1,
+    probe.titleColors + ' 种颜色');
+  check('统计区 100×100 不是纯色（统计格真的画了）', probe.statsColors > 1,
+    probe.statsColors + ' 种颜色');
   check('文件名符合 2048-YYYYMMDD-<score>.png', probe.name === '2048-20261107-123456.png', probe.name);
 
   // 关掉结算浮层，进入复盘入口的两种状态
@@ -1381,6 +1416,25 @@ async function main() {
   await press('Escape');
   await wait(200);
 
+  // 有日志但盘面还原不出来（v 为空）：不能导出一张「空棋盘 + 有数字」的卡
+  await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    Game2048Storage.set(Game2048Storage.KEYS.review + '.' + key, {
+      version: 1,
+      date: key,
+      moves: [{ d: 'left', v: [], g: 0, b: null, s: null, t: null }],
+      summary: null,
+      meta: { score: 32, moves: 1, maxTile: 2, won: false }
+    });
+    return 1;
+  })()`);
+  await click('#reviewOpen');
+  await wait(300);
+  check('日志有步数但盘面还原不出来时不渲染导出按钮',
+    (await evalJs('!!document.getElementById("reviewReport")')) === false);
+  await press('Escape');
+  await wait(200);
+
   await evalJs(`(function () {
     var key = Game2048Rng.dateKey(new Date());
     Game2048Storage.set(Game2048Storage.KEYS.review + '.' + key, {
@@ -1400,12 +1454,39 @@ async function main() {
   await wait(300);
   check('有落盘日志时出现「导出今日战报」',
     (await evalJs('!!document.getElementById("reviewReport")')) === true);
+  const beforeReviewSave = await text('#status');
   await evalJs('document.getElementById("reviewReport").click(), 1');
-  await wait(700);
-  const reviewStatus = await text('#status');
+  const reviewStatus = await waitStatus(/战报已保存/, beforeReviewSave);
   check('复盘导出不写失败文案',
     (reviewStatus || '').indexOf('战报生成失败') < 0 && /战报已保存/.test(reviewStatus || ''),
     reviewStatus);
+  await press('Escape');
+  await wait(200);
+
+  // 进行中的每日局：抽屉渲染的是 live 日志，导出必须用 live 的 meta 与当前盘面，
+  // 而不是旁边那份 score 1024 的落盘日志 —— 玩家看着哪局，存的就该是哪局。
+  await click('#dailyChallenge');
+  await wait(600);
+  const liveDirs = ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'];
+  for (let i = 0; i < liveDirs.length; i++) {
+    await press(liveDirs[i]);
+    await wait(450);
+    if ((await savedMoves()) > 0) break;
+  }
+  check('每日局已经走了一步（live 日志有步数）', (await savedMoves()) > 0,
+    'moves=' + (await savedMoves()));
+  const liveScore = await evalJs('Game2048Storage.get(Game2048Storage.KEYS.state).score');
+
+  await click('#reviewOpen');
+  await wait(300);
+  check('只有 live 日志有步数时也渲染导出按钮',
+    (await evalJs('!!document.getElementById("reviewReport")')) === true);
+  const beforeLiveSave = await text('#status');
+  await evalJs('document.getElementById("reviewReport").click(), 1');
+  const liveStatus = await waitStatus(/战报已保存/, beforeLiveSave);
+  check('导出的是进行中这局（不是落盘那局的 1024 分）',
+    (liveStatus || '').indexOf('-' + liveScore + '.png') >= 0,
+    liveStatus + ' / live=' + liveScore);
   await press('Escape');
   await wait(200);
 

@@ -113,6 +113,12 @@ function baseData(extra) {
 
     const loose = Report.buildModel(baseData({ daily: { streak: 0, attempt: 1 } }));
     eq('刚打第一次也有连续天数', loose.stats[3].value, '0');
+
+    const noAttempt = Report.buildModel(baseData({ daily: { streak: 0, attempt: 0 } }));
+    eq('次数缺失时不写「第 0 次」', noAttempt.footer, '2048 桌面版 · 每日挑战');
+
+    const missingAttempt = Report.buildModel(baseData({ daily: { streak: 2 } }));
+    eq('daily 没有 attempt 时同样省略次数', missingAttempt.footer, '2048 桌面版 · 每日挑战');
   });
 
   await group('buildModel：空盘面与脏数据', () => {
