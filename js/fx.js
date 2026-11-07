@@ -52,10 +52,14 @@
   var CONFETTI_GRAVITY = 180;
   var DUST_GRAVITY = 40;
 
-  /** 彩带用的颜色环：方块色轮着来，保证每一片都能在纸面上看见 */
+  /**
+   * 彩带用的颜色环：方块色轮着来，保证每一片都能在纸面上看见。
+   * 全部取自 styles.css 的 .tile__inner[data-value] 段 —— 彩带不允许出现色板外的颜色
+   * （浅色的 2 / 4 会糊在纸面上，这里跳过）。
+   */
   var CONFETTI_COLORS = [
     '#f2b179', '#f67c5f', '#edcf72', '#edcc61',
-    '#edc850', '#8fbf7f', '#7fa8c9', '#c98fb4'
+    '#edc850', '#f65e3b', '#edc53f', '#edc22e'
   ];
 
   /** 落尘的灰：比棋盘底色深一点，压在木纹上也不抢眼 */
@@ -557,6 +561,7 @@
 
   return {
     MAX_PARTICLES: MAX_PARTICLES,
+    CONFETTI_COLORS: CONFETTI_COLORS,
     palette: palette,
     planBurst: planBurst,
     planConfetti: planConfetti,

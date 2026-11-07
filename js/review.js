@@ -51,7 +51,8 @@
   var TILE_COLORS = {
     empty: { background: 'rgba(94, 76, 58, 0.09)', color: 'transparent' },
     obstacle: { background: '#6d5c4b', color: 'transparent' },
-    big: { background: '#3c3a32', color: '#f9f6f2' },
+    // 与 styles.css 的 --tile-bg（超出 2048 的深炭色）保持一致，否则 4096+ 比真棋盘浅一档
+    big: { background: '#3f3b33', color: '#f9f6f2' },
     '2': { background: '#eee4da', color: '#776e65' },
     '4': { background: '#ede0c8', color: '#776e65' },
     '8': { background: '#f2b179', color: '#fdf9f2' },

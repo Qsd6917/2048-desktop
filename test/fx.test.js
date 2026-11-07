@@ -187,6 +187,24 @@ group('planConfetti', function () {
   ok('零尺寸下 x 仍有限且为 0', zero.every(function (p) { return p.x === 0; }));
 });
 
+group('彩带颜色只在方块色板内', function () {
+  // 与 styles.css 的 .tile__inner[data-value] 同一套色：彩带不允许出现色板外的颜色
+  const allowed = new Set([2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048].map(function (v) {
+    return Fx.palette(v).main;
+  }));
+  const colors = Fx.CONFETTI_COLORS;
+
+  ok('每一种彩带色都来自方块色板',
+    colors.every(function (c) { return allowed.has(c); }), colors.join(','));
+  ok('至少有 6 种颜色（不会整片单色）', colors.length >= 6, String(colors.length));
+  ok('不用纸面浅色（2 / 4 的两色）',
+    colors.indexOf('#eee4da') < 0 && colors.indexOf('#ede0c8') < 0, colors.join(','));
+
+  const list = Fx.planConfetti({ width: 640, height: 480, count: 60, random: seeded(21) });
+  ok('实际彩带粒子用的也是这套色',
+    list.every(function (p) { return colors.indexOf(p.color) >= 0; }));
+});
+
 group('planDust', function () {
   const list = Fx.planDust({ width: 800, height: 600, count: 40, random: seeded(31) });
 

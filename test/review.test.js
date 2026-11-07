@@ -80,6 +80,8 @@ group('结构', () => {
   ok('analyze 是函数', typeof Review.analyze === 'function');
   ok('TILE_COLORS 带经典色板', Review.TILE_COLORS['2'].background === '#eee4da' &&
     Review.TILE_COLORS['2048'].background === '#edc22e');
+  // 4096+ 用 styles.css 的 --tile-bg，比经典色板更深的炭色
+  eq('超大块色与棋盘一致', Review.TILE_COLORS.big.background, '#3f3b33');
 });
 
 group('colorFor 覆盖空格 / 障碍 / 超大块', () => {
