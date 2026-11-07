@@ -1136,15 +1136,21 @@
 
     // 通关类成就不能挂在 firstTime 上：限时局超时先记过一局、撤销后再通关时
     // extraMoves 恰好为 0 且 firstTime 为 false，挂 firstTime 就整批漏记。
-    if (state.won && !state.winRecorded) {
+    var firstWin = state.won && !state.winRecorded;
+    if (firstWin) {
       patch.wins = 1;
       patch.modeWins = {};
       patch.modeWins[settings.mode] = 1;
       if (!state.undoUsed) patch.undoWins = 1;
-      state.winRecorded = true;
     }
 
     applyProfile(patch);
+
+    // 闸门必须在落账之后再关：applyProfile 在成就档案缺失时会直接 return，
+    // 先关闸门就会让这一局通关永久丢失（之后的结算全被闸门挡在外面）。
+    // 它是 void，无法判断成功，所以靠「档案缺失时不落盘」的既有语义兜底：
+    // 那种情况下本局本来也没记上，闸门开着至少留了下次补记的机会。
+    if (firstWin) state.winRecorded = true;
   }
 
   /** 进入每日挑战：dailyPlays +1，连续天数取「今天往回数」的结果（只增不减） */
@@ -2184,15 +2190,16 @@
       return;
     }
 
-    bankResult('win');
-
     // 与 continuePlaying 同理：托管走到目标那一步可能同时无解。
-    // 不补这一判，托管只会停在一句「托管结束：无处可走」，over 仍为 false，永不结算。
+    // 判定必须放在 bankResult('win') 之前：无解就直接以「死局」结算一次，
+    // 通关仍由 winRecorded 闸门补记（state.won 已为 true，不会漏）；
+    // 反之先放胜利音效/彩带、紧跟一次 stuck 失败音效/落尘，胜利那套当场被压掉。
     if (!G.hasMoves(state.board)) {
       finishGame('stuck');
       return;
     }
 
+    bankResult('win');
     saveState();
 
     setStatus('目标已达成 · 托管继续往上冲');
