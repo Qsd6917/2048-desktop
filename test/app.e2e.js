@@ -475,8 +475,150 @@ async function main() {
   check('00:00 保留 is-urgent 紧急样式', clockText === '00:00' && clockUrgent === true,
     clockText + ' / urgent=' + clockUrgent);
 
-  /* ---------- T9 控制台 ---------- */
-  console.log('\n[T9] 控制台');
+  /* ---------- T9 全屏粒子层的运行时行为 ---------- */
+  console.log('\n[T9] 全屏粒子层');
+
+  const fxRect = JSON.parse(await evalJs(`(function () {
+    var r = document.getElementById('fx').getBoundingClientRect();
+    return JSON.stringify({
+      w: r.width, h: r.height,
+      iw: window.innerWidth, ih: window.innerHeight,
+      pe: getComputedStyle(document.getElementById('fx')).pointerEvents
+    });
+  })()`));
+  check('#fx 铺满视口', Math.abs(fxRect.w - fxRect.iw) <= 1 && Math.abs(fxRect.h - fxRect.ih) <= 1,
+    fxRect.w + '×' + fxRect.h + ' / 视口 ' + fxRect.iw + '×' + fxRect.ih);
+  check('#fx 不吃指针事件', fxRect.pe === 'none', fxRect.pe);
+
+  // 自建一个离屏实例单独测上限/可见性，不动正式粒子层
+  await evalJs(`window.__fxProbe = Game2048Fx.create({ canvas: document.createElement('canvas') }), 1`);
+
+  const capStats = JSON.parse(await evalJs(`(function () {
+    var burst = [];
+    for (var i = 0; i < 40; i++) {
+      burst = burst.concat(Game2048Fx.planBurst({ value: 2048, combo: 9, x: 100, y: 100 }));
+    }
+    // 6 批 × 46 个 ≈ 2700，远超 900 的上限
+    for (var k = 0; k < 6; k++) window.__fxProbe.burst(burst);
+    return JSON.stringify(window.__fxProbe.stats());
+  })()`));
+  check('粒子池上限 900（超出丢最旧）', capStats.particles === 900, 'particles=' + capStats.particles);
+
+  const runningAtFirst = await evalJs(`(function () {
+    window.__fxProbe.burst(Game2048Fx.planBurst({ value: 8, x: 10, y: 10 }));
+    return window.__fxProbe.stats().running;
+  })()`);
+  check('有粒子时 rAF 在跑', runningAtFirst === true);
+
+  // 伪造 hidden：直接改写 document.hidden 再派发真实事件，走的是与浏览器同一条处理路径
+  await evalJs(`(function () {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: function () { return true; }
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+    return 1;
+  })()`);
+  check('页面 hidden 后 rAF 停下', (await evalJs('window.__fxProbe.stats().running')) === false);
+
+  await evalJs(`(function () {
+    delete document.hidden;
+    document.dispatchEvent(new Event('visibilitychange'));
+    return 1;
+  })()`);
+  check('回到前台后 rAF 继续', (await evalJs('window.__fxProbe.stats().running')) === true);
+  await evalJs('window.__fxProbe.stop(), 1');
+  const stopped = JSON.parse(await evalJs('JSON.stringify(window.__fxProbe.stats())'));
+  check('stop 之后循环与粒子都清空',
+    stopped.particles === 0 && stopped.rings === 0 && stopped.sweeps === 0 && stopped.running === false,
+    JSON.stringify(stopped));
+
+  // 真实合并走一遍映射表第 2 行：≥256 要有环 + 震屏，音频要带 accent
+  await loadBoard([
+    [128, 128, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'classic');
+
+  /** 装上音阶探针：只记录调用参数，不关心是否真的发声 */
+  const installTuningSpy = `(function () {
+    window.__tuningCalls = [];
+    var real = Game2048Tuning.mergeNotes;
+    Game2048Tuning.mergeNotes = function (values, combo, opts) {
+      window.__tuningCalls.push({
+        values: values.slice(),
+        combo: combo,
+        accent: !!(opts && opts.accent === true)
+      });
+      return real(values, combo, opts);
+    };
+    Game2048Audio.setEnabled(true);   // loadBoard 为了安静把音效关了
+    return 1;
+  })()`;
+
+  await evalJs(installTuningSpy);
+  await press('ArrowLeft');
+  await wait(150);
+  check('合出 256', (await evalJs(SIG)).indexOf('=256') >= 0, await evalJs(SIG));
+  check('≥256 触发震屏',
+    (await evalJs('document.getElementById("app").classList.contains("is-shaking")')) === true);
+
+  const calls256 = JSON.parse(await evalJs('JSON.stringify(window.__tuningCalls || [])'));
+  check('≥256 的合并把 accent 传给了音阶层',
+    calls256.length === 1 && calls256[0].accent === true && calls256[0].values.indexOf(256) >= 0,
+    JSON.stringify(calls256));
+
+  await wait(460);
+  check('震屏自动收掉',
+    (await evalJs('document.getElementById("app").classList.contains("is-shaking")')) === false);
+
+  // 小合并不该带 accent
+  await loadBoard([
+    [2, 2, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'classic');
+  await evalJs(installTuningSpy);
+  await press('ArrowLeft');
+  await wait(150);
+  const callsSmall = JSON.parse(await evalJs('JSON.stringify(window.__tuningCalls || [])'));
+  check('小于 256 的合并不带 accent',
+    callsSmall.length === 1 && callsSmall[0].accent === false,
+    JSON.stringify(callsSmall));
+
+  // 强制「减少动态效果」：与 app.js 一样按 matchMedia 建实例，再触发 burst
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+  });
+  check('系统偏好已强制为 reduce',
+    (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === true);
+
+  const reducedStats = JSON.parse(await evalJs(`(function () {
+    window.__fxProbe = Game2048Fx.create({
+      canvas: document.createElement('canvas'),
+      reduceMotion: matchMedia('(prefers-reduced-motion: reduce)').matches
+    });
+    window.__fxProbe.burst(Game2048Fx.planBurst({ value: 2048, combo: 9, x: 10, y: 10 }));
+    window.__fxProbe.confetti(120);
+    window.__fxProbe.dust(40);
+    window.__fxProbe.ring(10, 10, 256);
+    window.__fxProbe.sweep();
+    return JSON.stringify(window.__fxProbe.stats());
+  })()`));
+  check('reduce 下粒子/环/扫光恒为 0',
+    reducedStats.particles + reducedStats.rings + reducedStats.sweeps === 0,
+    JSON.stringify(reducedStats));
+  check('reduce 下 rAF 不启动', reducedStats.running === false);
+  await evalJs('window.__fxProbe.stop(), delete window.__fxProbe, 1');
+
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  check('媒体模拟已撤销',
+    (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === false);
+
+  /* ---------- T10 控制台 ---------- */
+  console.log('\n[T10] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

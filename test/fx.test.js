@@ -199,6 +199,32 @@ group('planDust', function () {
   ok('统一灰色', new Set(list.map(function (p) { return p.color; })).size === 1);
 });
 
+group('create：无画布时退化为空操作', function () {
+  const empty = Fx.create({});
+  empty.burst([{ x: 0, y: 0, vx: 1, vy: 1, gravity: 1, life: 1, age: 0, size: 3, shape: 'dot', color: '#000', rot: 0, spin: 0 }]);
+  empty.burst([{ x: 0, y: 0 }]);
+  empty.confetti(120);
+  empty.dust(40);
+  empty.ring(10, 10, 256);
+  empty.sweep();
+  empty.shake(0.8);
+  empty.resize();
+  eq('burst/confetti/ring 一个都不攒', empty.stats().particles, 0);
+  eq('环与扫光也不攒', empty.stats().rings + empty.stats().sweeps, 0);
+  eq('running 恒为 false', empty.stats().running, false);
+  empty.stop();
+  eq('stop 可重复调用', empty.stats().particles, 0);
+
+  // 有 canvas 但没有 2D 上下文（极老环境/被禁用）：同样整体退化
+  const noCtx = Fx.create({
+    canvas: { getContext: function () { return null; }, ownerDocument: { defaultView: {} } }
+  });
+  noCtx.burst([{ x: 1, y: 1 }]);
+  eq('拿不到 2D 上下文也不攒粒子', noCtx.stats().particles, 0);
+
+  eq('reduceMotion 如实回传', Fx.create({ reduceMotion: true }).stats().reduceMotion, true);
+});
+
 group('常量', function () {
   eq('粒子池上限 900', Fx.MAX_PARTICLES, 900);
 });

@@ -224,6 +224,31 @@
   }
 
   /**
+   * canvas / 2D 上下文缺失时的替身：全部空操作。
+   *
+   * 必须整块替换掉实现，而不是在内部各方法里判空 —— 否则 burst() 照样往
+   * particles 里塞数据，循环却永远不会启动，数组会一直涨下去。
+   *
+   * @param {boolean} reduceMotion 如实回传，便于调用方排查
+   */
+  function noopApi(reduceMotion) {
+    function noop() {}
+    return {
+      burst: noop,
+      confetti: noop,
+      dust: noop,
+      ring: noop,
+      sweep: noop,
+      shake: noop,
+      resize: noop,
+      stop: noop,
+      stats: function () {
+        return { particles: 0, rings: 0, sweeps: 0, running: false, reduceMotion: reduceMotion };
+      }
+    };
+  }
+
+  /**
    * 创建一块全屏粒子画布。
    * @param {{canvas?: HTMLCanvasElement, reduceMotion?: boolean}} options
    *        reduceMotion 为 true 时所有特效方法都是空操作（音效不受影响）。
@@ -238,6 +263,9 @@
     var ctx = canvas && typeof canvas.getContext === 'function'
       ? canvas.getContext('2d')
       : null;
+
+    // 没有画布或 2D 上下文就彻底退化，别留半套状态
+    if (!canvas || !ctx || !doc || !win) return noopApi(reduceMotion);
 
     var particles = [];
     var rings = [];
@@ -453,7 +481,7 @@
      * @param {number} intensity 0.1~1，1 约等于 7px 位移
      */
     function shake(intensity) {
-      if (reduceMotion || !doc) return;
+      if (reduceMotion) return;
 
       var app = doc.querySelector('.app');
       if (!app) return;
@@ -482,12 +510,12 @@
       rings = [];
       sweeps = [];
 
-      if (shakeTimer !== null && win) win.clearTimeout(shakeTimer);
+      if (shakeTimer !== null) win.clearTimeout(shakeTimer);
       shakeTimer = null;
       if (shakeEl) shakeEl.classList.remove('is-shaking');
       shakeEl = null;
 
-      if (ctx) ctx.clearRect(0, 0, width, height);
+      ctx.clearRect(0, 0, width, height);
     }
 
     function stats() {
@@ -502,21 +530,17 @@
 
     /* ---------- 自适应与可见性 ---------- */
 
-    if (canvas && ctx) {
-      resize();
+    resize();
 
-      if (win) {
-        win.addEventListener('resize', resize);
-        doc.addEventListener('visibilitychange', function () {
-          if (doc.hidden) {
-            pause();
-            return;
-          }
-          resize();   // 后台期间视口可能变了（旋转/分屏），先对齐再继续
-          if (particles.length || rings.length || sweeps.length) ensureLoop();
-        });
+    win.addEventListener('resize', resize);
+    doc.addEventListener('visibilitychange', function () {
+      if (doc.hidden) {
+        pause();
+        return;
       }
-    }
+      resize();   // 后台期间视口可能变了（旋转/分屏），先对齐再继续
+      if (particles.length || rings.length || sweeps.length) ensureLoop();
+    });
 
     return {
       burst: burst,
