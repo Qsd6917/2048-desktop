@@ -261,6 +261,12 @@
     undoUsed: false,
     /** 本局已计入 perfectMoves 的「与 AI 一致步数」，结算两次只补增量 */
     perfectRecorded: 0,
+    /**
+     * 本局通关是否已经计入 wins / modeWins / undoWins。
+     * 不能复用 recorded：超时先结算过一次的局，撤销后再通关时 recorded 已为 true，
+     * 但通关尚未入账。跟局面一起落盘，跨刷新也不会重复加。
+     */
+    winRecorded: false,
     /** 本局复盘日志（每日局才建；普通局为 null） */
     reviewLog: null,
     /** 连击数：本步有合并则 +1，无合并步或空档超时清零 */
@@ -1113,12 +1119,12 @@
 
   /**
    * 一局入账，与 recordGame 同一口径：
-   *   games / sizes / wins / modeWins 只在首次入账时 +1，
-   *   bestScore / bestTile / totalMoves 跟着「继续挑战」的增量推进。
+   *   games / sizes 只在首次入账时 +1，
+   *   wins / modeWins / undoWins 由 winRecorded 做闸门（一局只加一次通关），
+   *   bestScore / bestTile 每次都提交（零增量结算也要把最好成绩推上去），
+   *   totalMoves 跟着「继续挑战」的增量推进。
    */
   function recordGameAchievements(firstTime, extraMoves, tile) {
-    if (!firstTime && extraMoves <= 0) return;
-
     var patch = { bestScore: state.score, bestTile: countOf(tile) };
     if (firstTime) patch.games = 1;
     if (extraMoves > 0) patch.totalMoves = extraMoves;
@@ -1126,13 +1132,16 @@
     if (firstTime) {
       patch.sizes = {};
       patch.sizes[String(settings.size)] = 1;
+    }
 
-      if (state.won) {
-        patch.wins = 1;
-        patch.modeWins = {};
-        patch.modeWins[settings.mode] = 1;
-        if (!state.undoUsed) patch.undoWins = 1;
-      }
+    // 通关类成就不能挂在 firstTime 上：限时局超时先记过一局、撤销后再通关时
+    // extraMoves 恰好为 0 且 firstTime 为 false，挂 firstTime 就整批漏记。
+    if (state.won && !state.winRecorded) {
+      patch.wins = 1;
+      patch.modeWins = {};
+      patch.modeWins[settings.mode] = 1;
+      if (!state.undoUsed) patch.undoWins = 1;
+      state.winRecorded = true;
     }
 
     applyProfile(patch);
@@ -1254,6 +1263,9 @@
       // 之后 recorded 归零，再结算一次就会把同一局的 games 再加一遍。
       recorded: state.recorded,
       recordedMoves: state.recordedMoves,
+      // 通关入账闸门必须跟着局面存：否则「超时 → 撤销 → 通关 → 刷新 → 再结算」
+      // 会让同一局多记一次 wins / modeWins。
+      winRecorded: state.winRecorded,
       // 本局已计入 perfectMoves 的一致步数也必须跟着局面存：否则
       // 「达成目标 → 继续挑战 → 关页 → 重开 → 再结算」会把同一局的 matched 再累加一遍。
       perfectRecorded: state.perfectRecorded,
@@ -1330,6 +1342,9 @@
 
     // 老存档没有 undoUsed 字段：按「这一局没用过撤销」处理，与旧行为一致
     var undoUsed = Boolean(data.undoUsed);
+    // 老存档没有 winRecorded 字段：按 false 处理（规格口径）。
+    // 代价是极老的「已通关且已入账」存档在下次结算时会多补一次 wins；新存档不会。
+    var winRecorded = Boolean(data.winRecorded);
 
     return {
       size: size,
@@ -1349,6 +1364,7 @@
       dailyRecordedMoves: dailyRecordedMoves,
       perfectRecorded: perfectRecorded,
       undoUsed: undoUsed,
+      winRecorded: winRecorded,
       reviewLog: reviewLog
     };
   }
@@ -1479,6 +1495,7 @@
     state.moves = 0;
     state.recorded = false;
     state.recordedMoves = 0;
+    state.winRecorded = false;
     state.dailyRecorded = false;
     state.dailyRecordedMoves = 0;
     state.undoUsed = false;
@@ -1573,11 +1590,14 @@
    *   - totalMoves 加上次入账之后新增的步数；
    *   - bestScore / bestTile 取 max。
    * 这样继续挑战期间的分数与步数都不会丢，刷新后「最高」也不会倒退。
+   *
+   * 零增量不等于零进展：撤销回退后再合出目标时 extraMoves 恰好为 0，
+   * 但分数、最大块、通关都可能刚刚推进。所以这里只跳过 games / totalMoves 的加数，
+   * 后面的 max 更新、落盘、成就与每日结算一律照走。
    */
   function recordGame() {
     var firstTime = !state.recorded;
     var extraMoves = Math.max(0, state.moves - state.recordedMoves);
-    if (!firstTime && extraMoves === 0) return;   // 继续挑战期间没有新进展，不必写盘
 
     var tile = G.maxValue(state.board);
     stats = Storage.loadStats();
@@ -1623,12 +1643,24 @@
 
     var movesDelta = Math.max(0, state.moves - state.dailyRecordedMoves);
     var countFinish = !state.dailyRecorded;
-    if (!countFinish && movesDelta === 0) return;   // 没有新进展，不必写盘
+    var tile = G.maxValue(state.board);
+
+    // 零步增量不等于零进展：超时后撤销再通关时步数正好回到已入账值，
+    // 但分数 / 最大块 / 达标都可能刚推进，今日最佳仍要跟着走。
+    // 只有三项都没超过已记录值时才真的跳过写盘。
+    if (!countFinish && movesDelta === 0) {
+      var today = loadDailyStore().days[state.dailyKey];
+      var advanced = !today ||
+        state.score > today.bestScore ||
+        tile > today.bestTile ||
+        (state.won && !today.won);
+      if (!advanced) return;
+    }
 
     saveDailyStore(Daily.recordResult(loadDailyStore(), state.dailyKey, {
       score: state.score,
       moves: state.moves,
-      maxTile: G.maxValue(state.board),
+      maxTile: tile,
       won: state.won
     }, Date.now(), { finish: countFinish, movesDelta: movesDelta }));
 
@@ -2361,6 +2393,8 @@
         // 入账标记跟着局面一起还原，保证同一局永远只记一次
         state.recorded = saved.recorded;
         state.recordedMoves = saved.recordedMoves;
+        // 通关闸门同样随局面还原：超时→撤销→通关→刷新后不会再记一次 wins
+        state.winRecorded = saved.winRecorded;
         // 用过撤销标记跟着局面还原：刷新后通关仍按「用过撤销」判 undoWins
         state.undoUsed = saved.undoUsed;
 

@@ -892,8 +892,79 @@ async function main() {
     return false;
   })()`));
 
-  /* ---------- T15 控制台 ---------- */
-  console.log('\n[T15] 控制台');
+  /* ---------- T15 零增量结算补齐 bestTile ---------- */
+  console.log('\n[T15] 时间到 -> 撤销一步 -> 合出 2048，bestTile 仍要推进');
+
+  const profileWins = () => evalJs(`(function () {
+    var p = Game2048Storage.get(Game2048Storage.KEYS.profile, null);
+    return p && p.stats && typeof p.stats.wins === 'number' ? p.stats.wins : 0;
+  })()`);
+
+  // 战绩清零：否则上一节已经记过 2048，旧实现的漏记会被历史值掩盖
+  await evalJs('Game2048Storage.remove(Game2048Storage.KEYS.stats), 1');
+  await loadBoard(BOARD_WIN_IN_ONE, 'timed');
+  const winsBeforeZero = await profileWins();
+
+  await press('ArrowDown');   // 先走一步不合成：把 recordedMoves 推到 1
+  await wait(600);
+  check('拖延的这一步没合出 2048', (await statusMoves()) === 1, '已走 ' + (await statusMoves()) + ' 步');
+
+  await evalJs(`(function () {
+    window.__realNowT15 = Date.now.bind(Date);
+    var t0 = window.__realNowT15();
+    Date.now = function () { return t0 + (window.__realNowT15() - t0) * 300; };
+    return 1;
+  })()`);
+  await wait(1600);
+  await evalJs('Date.now = window.__realNowT15, 1');
+  check('时间到先结算一次', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+
+  check('时间到浮层里点了撤销一步', (await evalJs(`(function () {
+    var btns = document.querySelectorAll('#overlayActions button');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].textContent.trim() === '撤销一步') { btns[i].click(); return true; }
+    }
+    return false;
+  })()`)) === true);
+  await wait(400);
+
+  await press('ArrowLeft');   // 回到原步数，同时合出 2048：extraMoves 恰为 0
+  await wait(800);
+  check('撤销后合出 2048 弹出达成目标', (await text('#overlayTitle')) === '达成目标', await text('#overlayTitle'));
+
+  const statsAfterZero = await stats();
+  // 旧实现：recordGame 在 !firstTime && extraMoves === 0 处直接 return，
+  // bestTile 停在上一次结算的 1024，这里必然是 1024。
+  check('零增量结算把 bestTile 推到 2048', statsAfterZero.bestTile === 2048, String(statsAfterZero.bestTile));
+  check('零增量结算也把 bestScore 推到本局分数', statsAfterZero.bestScore === 2048, String(statsAfterZero.bestScore));
+
+  /* ---------- T16 同一局 wins 只记一次 ---------- */
+  console.log('\n[T16] 通关只记一次 wins');
+
+  // 旧实现：这次通关走的是「已 recorded + 零增量」，recordGame 提前返回，
+  // recordGameAchievements 根本没被调用，wins 一次都没加。
+  check('通关把 wins 恰好 +1', (await profileWins()) === winsBeforeZero + 1,
+    winsBeforeZero + ' -> ' + (await profileWins()));
+
+  await evalJs('document.querySelectorAll("#overlayActions button")[0].click(), 1');   // 继续挑战
+  await wait(400);
+
+  await evalJs(`(function () {
+    window.__realNowT16 = Date.now.bind(Date);
+    var t0 = window.__realNowT16();
+    Date.now = function () { return t0 + (window.__realNowT16() - t0) * 300; };
+    return 1;
+  })()`);
+  await wait(1600);
+  await evalJs('Date.now = window.__realNowT16, 1');
+  check('同一局再结算一次', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+
+  // 没有 winRecorded 闸门时，第二次结算会再写一遍 wins / modeWins，这里会变成 +2。
+  check('同一局再结算 wins 仍是 +1', (await profileWins()) === winsBeforeZero + 1,
+    winsBeforeZero + ' -> ' + (await profileWins()));
+
+  /* ---------- T17 控制台 ---------- */
+  console.log('\n[T17] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
