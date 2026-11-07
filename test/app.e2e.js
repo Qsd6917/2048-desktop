@@ -1159,8 +1159,36 @@ async function main() {
   await press('Escape');
   await wait(150);
 
-  /* ---------- T20 控制台 ---------- */
-  console.log('\n[T20] 控制台');
+  // M7：状态行与计时器要能被读屏读到
+  check('#status 是 polite 的 live region',
+    (await evalJs('document.getElementById("status").getAttribute("role")')) === 'status' &&
+      (await evalJs('document.getElementById("status").getAttribute("aria-live")')) === 'polite');
+  check('#timer 有「剩余时间」的可读标签',
+    (await evalJs('document.getElementById("timer").getAttribute("aria-label")')) === '剩余时间',
+    await evalJs('document.getElementById("timer").getAttribute("aria-label")'));
+
+  /* ---------- T20 每日挑战先关托管 ---------- */
+  console.log('\n[T20] 托管中点每日挑战：先关托管再开新局');
+
+  await loadBoard(BOARD_RIGHT_COL, 'classic');
+  await click('#autoplay');
+  await wait(900);
+  check('托管已经走起来', (await autoplayOn()) === true && (await savedMoves()) > 0,
+    'moves=' + (await savedMoves()));
+
+  await click('#dailyChallenge');
+  await wait(250);
+  // 旧实现 startDaily 不走 applySettingsChange，autoplay 仍为 true，
+  // startNewGame 收尾重新排期，玩家点的「每日挑战」立刻被 AI 接管
+  check('进入每日挑战后托管是关的', (await autoplayOn()) === false,
+    'aria-pressed=' + (await evalJs('document.getElementById("autoplay").getAttribute("aria-pressed")')));
+
+  await wait(1200);
+  const dailyMoves = await savedMoves();
+  check('每日挑战没有被 AI 接管', dailyMoves === 0, 'moves=' + dailyMoves);
+
+  /* ---------- T21 控制台 ---------- */
+  console.log('\n[T21] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

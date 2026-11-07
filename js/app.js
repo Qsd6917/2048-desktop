@@ -1593,6 +1593,9 @@
    * 每调一次算一次新的尝试（attempts +1），所以从界面点「重新开始」也走这里。
    */
   function startDaily() {
+    // 每日挑战强制 4×4 经典，等于换一局：与 applySettingsChange 同一规则，托管必须先关。
+    // 否则玩家点「每日挑战」本意是手动打，结果 AI 代为接管还白白消耗一次尝试。
+    disableAutoplay();
     state.dailyKey = todayKey();
     state.dailyRng = Rng.create(dailySeed(state.dailyKey)).next;
     state.rngCount = 0;

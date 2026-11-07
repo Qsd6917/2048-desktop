@@ -34,8 +34,8 @@
         <span class="hud-label">最大</span>
         <span class="hud-value" id="maxTile"></span>
       </div>
-      <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素 -->
-      <div class="hud-item hud-timer" id="timer" hidden></div>
+      <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素；aria-label 让读屏也知道这是剩余时间 -->
+      <div class="hud-item hud-timer" id="timer" aria-label="剩余时间" hidden></div>
     </div>
 
     <!-- 每日挑战条：同一天的种子固定，刷新可续；默认隐藏，由控制器决定展示 -->
@@ -88,8 +88,9 @@
       </div>
     </div>
 
+    <!-- 状态行是读屏唯一能听到的即时反馈（撤销 / 托管 / 连击），必须挂 live region -->
     <footer class="footer">
-      <span id="status">用方向键开始</span>
+      <span id="status" role="status" aria-live="polite">用方向键开始</span>
     </footer>
   </main>
 
