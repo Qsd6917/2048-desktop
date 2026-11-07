@@ -186,11 +186,39 @@
    * 这里是成就口径的累计指标，任何一边被写坏都不会污染另一边。
    * 模块缺失时保持 null，所有入口都先判空。
    */
-  var profile = Achievements
-    ? Achievements.normalizeProfile(Storage.get(Storage.KEYS.profile, null))
-    : null;
+  var profile = Achievements ? loadOrSeedProfile() : null;
   /** 档案有改动但还没落盘；批量落盘靠它避免同一次操作写多遍 */
   var profileDirty = false;
+
+  /**
+   * 读档案；档案还不存在（老玩家第一次装到带成就的版本）时用历史战绩播种。
+   *
+   * 只补 bestScore / bestTile / sizes 三项：它们能从 stats 精确还原，
+   * games / totalMoves 之类的累计值 stats 口径不同，硬折算会把成就虚增。
+   * 播种完立刻 evaluate 一次 —— 历史最高分对应的成就当场就该是解锁状态，
+   * 否则「主界面写着历史最高 32000、成就里两万分却是 0/20000」会一直补不上。
+   * 已有档案一律原样读入，绝不覆盖玩家自己的进度。
+   */
+  function loadOrSeedProfile() {
+    var raw = Storage.get(Storage.KEYS.profile, null);
+    if (raw !== null && raw !== undefined) return Achievements.normalizeProfile(raw);
+
+    var sizes = {};
+    var keys = Object.keys(stats.bySize || {});
+    for (var i = 0; i < keys.length; i++) {
+      var bucket = stats.bySize[keys[i]];
+      if (bucket && bucket.bestScore > 0) sizes[keys[i]] = 1;
+    }
+
+    var seeded = Achievements.addStats(Achievements.emptyProfile(), {
+      bestScore: stats.bestScore,
+      bestTile: stats.bestTile,
+      sizes: sizes
+    });
+    var result = Achievements.evaluate(seeded, Date.now());
+    Storage.set(Storage.KEYS.profile, result.profile);
+    return result.profile;
+  }
 
   var state = {
     board: null,
@@ -226,7 +254,7 @@
     dailyRecorded: false,
     /** 本局已计入每日 totalMoves 的步数；继续挑战后只补记增量 */
     dailyRecordedMoves: 0,
-    /** 本局是否用过撤销（结果类成就用，暂不落盘） */
+    /** 本局是否用过撤销（结果类成就用；随局面落盘，刷新后不归零） */
     undoUsed: false,
     /** 本局已计入 perfectMoves 的「与 AI 一致步数」，结算两次只补增量 */
     perfectRecorded: 0,
@@ -1154,6 +1182,9 @@
       // 本局已计入 perfectMoves 的一致步数也必须跟着局面存：否则
       // 「达成目标 → 继续挑战 → 关页 → 重开 → 再结算」会把同一局的 matched 再累加一遍。
       perfectRecorded: state.perfectRecorded,
+      // 用过撤销也必须跟着局面存：否则「撤销 → 刷新 → 通关」之后 undoUsed 归零，
+      // 这一局会被当成「没用过撤销」而多记一次 undoWins。
+      undoUsed: state.undoUsed,
       // 每日身份与随机序列位置必须跟局面一起存：读档后接着长出来的方块
       // 才能和没关页面时完全一致；dailyRecorded 则保证一局只记一次成绩。
       daily: state.dailyKey,
@@ -1222,6 +1253,9 @@
       if (perfectRecorded > moves) perfectRecorded = moves;
     }
 
+    // 老存档没有 undoUsed 字段：按「这一局没用过撤销」处理，与旧行为一致
+    var undoUsed = data.undoUsed === true;
+
     return {
       size: size,
       mode: data.mode,
@@ -1239,6 +1273,7 @@
       dailyRecorded: dailyRecorded,
       dailyRecordedMoves: dailyRecordedMoves,
       perfectRecorded: perfectRecorded,
+      undoUsed: undoUsed,
       reviewLog: reviewLog
     };
   }
@@ -2195,6 +2230,8 @@
         // 入账标记跟着局面一起还原，保证同一局永远只记一次
         state.recorded = saved.recorded;
         state.recordedMoves = saved.recordedMoves;
+        // 用过撤销标记跟着局面还原：刷新后通关仍按「用过撤销」判 undoWins
+        state.undoUsed = saved.undoUsed;
 
         if (saved.daily) {
           if (saved.daily === todayKey()) {

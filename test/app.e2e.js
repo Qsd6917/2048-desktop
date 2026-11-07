@@ -620,7 +620,13 @@ async function main() {
   /* ---------- T11 成就系统 ---------- */
   console.log('\n[T11] 成就：计数、面板与提示条');
 
-  await evalJs('Game2048Storage.remove(Game2048Storage.KEYS.profile), 1');
+  // 档案与历史战绩一起清空：现在新档案会用 stats 播种，
+  // 只删档案会按历史最高分补出一批已解锁成就，测不到「全新玩家」这一档。
+  await evalJs(`(function () {
+    Game2048Storage.remove(Game2048Storage.KEYS.profile);
+    Game2048Storage.remove(Game2048Storage.KEYS.stats);
+    return 1;
+  })()`);
   await reload();
   check('清空档案后首次进入是 0/25', (await text('#achOpen')) === '成就 0/25',
     await text('#achOpen'));
