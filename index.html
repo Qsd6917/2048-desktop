@@ -17,10 +17,20 @@
 
     <!-- 五个指标同一套仪表语言：上标签、下数值；限时以外模式计时器整格隐藏 -->
     <div class="hud">
-      <div class="hud-item hud-item--score" aria-live="polite">
+      <!-- 经典 / 限时 / 障碍：总分。双人下整格隐藏，换成下面两个玩家分数块 -->
+      <div class="hud-item hud-item--score" id="scoreBox" aria-live="polite">
         <span class="hud-label">得分</span>
         <span class="hud-value" id="score">0</span>
         <span class="hud-gain" id="scoreGain" aria-hidden="true"></span>
+      </div>
+      <!-- 双人：两人各自累计，当前走子的一方加 is-active -->
+      <div class="hud-item hud-item--duel" id="p1Block" hidden>
+        <span class="hud-label">玩家 1</span>
+        <span class="hud-value" id="p1Score">0</span>
+      </div>
+      <div class="hud-item hud-item--duel" id="p2Block" hidden>
+        <span class="hud-label">玩家 2</span>
+        <span class="hud-value" id="p2Score">0</span>
       </div>
       <div class="hud-item">
         <span class="hud-label">最高</span>
@@ -44,6 +54,12 @@
       <span class="daily-bar__date" id="dailyDate"></span>
       <span class="daily-bar__meta" id="dailyMeta"></span>
       <button class="btn btn--chip" id="dailyStart" type="button">开始挑战</button>
+    </div>
+
+    <!-- 双人回合条：与每日条同一套信息条语言；只标「轮到谁」，不重复放分数 -->
+    <div class="daily-bar duel-bar" id="duelBar" hidden>
+      <span class="daily-bar__date" id="turnLabel"></span>
+      <span class="daily-bar__meta">同一块棋盘轮流走子 · 合并得分归当前玩家</span>
     </div>
 
     <div class="controls" id="extras">
@@ -73,6 +89,7 @@
         <button class="btn btn--chip" type="button" data-mode="classic" aria-pressed="false">经典</button>
         <button class="btn btn--chip" type="button" data-mode="timed" aria-pressed="false">限时</button>
         <button class="btn btn--chip" type="button" data-mode="obstacle" aria-pressed="false">障碍</button>
+        <button class="btn btn--chip" type="button" data-mode="duel" aria-pressed="false">双人</button>
       </div>
 
       <button class="btn btn--toggle btn--switch" id="soundToggle" type="button" aria-pressed="true">音效：开</button>
@@ -126,6 +143,7 @@
   <script src="js/logic.js"></script>
   <script src="js/rng.js"></script>
   <script src="js/daily.js"></script>
+  <script src="js/duel.js"></script>
   <script src="js/ai.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/storage.js"></script>

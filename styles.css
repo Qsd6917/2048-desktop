@@ -183,6 +183,24 @@ body {
   border-left: 1px solid var(--line);
 }
 
+/*
+ * .hud-item 是 flex，会盖掉 [hidden] 的 display:none —— 双人的分数块靠 hidden 收起，
+ * 必须补回这条，否则非双人模式下会凭空多出两格。
+ */
+.hud-item[hidden] {
+  display: none;
+}
+
+/* 双人：当前走子的一方加底色与顶部描边（只用既有变量，不引入新配色） */
+.hud-item--duel.is-active {
+  background: rgba(180, 112, 58, 0.1);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.hud-item--duel.is-active .hud-label {
+  color: var(--accent);
+}
+
 .hud-label {
   font-size: 9px;
   font-weight: 700;
@@ -474,6 +492,11 @@ body {
   text-overflow: ellipsis;
   font-size: 11px;
   color: var(--ink-faint);
+}
+
+/* 双人回合条：复用信息条骨架，只把「轮到谁」提到主色，扫一眼就能读到 */
+.duel-bar .daily-bar__date {
+  color: var(--accent);
 }
 
 /* 胶囊按钮在信息条里给一层白底，明确「可以点」，但高度仍压在小尺寸 */
