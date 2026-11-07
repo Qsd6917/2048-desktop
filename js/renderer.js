@@ -113,7 +113,9 @@
       node.inner.classList.toggle('len2', tile.value < 100);
       node.inner.classList.toggle('len3', tile.value >= 100 && tile.value < 1000);
       node.inner.classList.toggle('len4', tile.value >= 1000);
-      node.inner.classList.toggle('is-super', tile.value > G.WIN_VALUE);
+      // 超越目标才走深色：目标值随尺寸变（4→2048 / 5→4096 / 6→8192）
+      var goal = G.GOAL_BY_SIZE[size] || G.WIN_VALUE;
+      node.inner.classList.toggle('is-super', tile.value > goal);
     }
 
     /** 记录并设置方块的新坐标（外层 translate 全靠这两个变量） */
