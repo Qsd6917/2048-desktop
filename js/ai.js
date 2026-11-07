@@ -305,16 +305,26 @@
   /**
    * 根节点的一轮搜索：按贪心分数排好序的方向依次求期望值。
    * 先搜高分的分支能更早拿到一个不错的解，中断时也不至于太差。
+   *
+   * 每个方向的分数同时收进 scores（key 为方向），下游（复盘）靠它判断
+   * 玩家实际选择与最佳选择差了多少；中断的那一轮整体作废，scores 因此
+   * 不会以半成品的形式流出去。
    */
   function rootSearch(legal, depth, ctx) {
     var best = null;
+    var scores = {};
+
     for (var i = 0; i < legal.length; i++) {
       var score = chanceNode(legal[i].values, depth - 1, ctx);
       if (ctx.aborted) break;
+
+      scores[legal[i].dir] = score;
       if (!best || score > best.score) {
         best = { dir: legal[i].dir, score: score, depth: depth };
       }
     }
+
+    if (best) best.scores = scores;
     return best;
   }
 
@@ -350,8 +360,11 @@
       return b.greedy - a.greedy;
     });
 
-    // 深度 0 的答案：纯静态评估挑一步，保证无论如何都有合法方向可返回
-    var best = { dir: legal[0].dir, score: legal[0].greedy, depth: 0 };
+    // 深度 0 的答案：纯静态评估挑一步，保证无论如何都有合法方向可返回。
+    // 此时没有搜索分数，scores 就用这四个方向的静态评估值顶上。
+    var staticScores = {};
+    for (i = 0; i < legal.length; i++) staticScores[legal[i].dir] = legal[i].greedy;
+    var best = { dir: legal[0].dir, score: legal[0].greedy, depth: 0, scores: staticScores };
 
     for (var depth = 1; depth <= MAX_DEPTH; depth++) {
       // 除第一层外，超时就别再开新的一层
@@ -362,7 +375,7 @@
       if (Date.now() >= ctx.deadline) break;
     }
 
-    return { dir: best.dir, score: best.score, depth: best.depth };
+    return { dir: best.dir, score: best.score, depth: best.depth, scores: best.scores };
   }
 
   return {
