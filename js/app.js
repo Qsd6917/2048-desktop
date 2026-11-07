@@ -66,6 +66,11 @@
   var COMBO_FX_AT = 3;
   /** 大块合并的门槛：到这个值，音频加高八度、视觉加环与震屏 */
   var ACCENT_VALUE = 256;
+  /** 读档标量上界：手改/损坏存档写进 1e12 或 Infinity 时不能被当真 */
+  var SAVE_MAX_SCORE = 1e9;
+  var SAVE_MAX_MOVES = 1e6;
+  /** rngCount 上限：一局 240 步 × 4 次取数也远小于它，再大只能是在冻页面 */
+  var SAVE_MAX_RNG_COUNT = 1e5;
   /** 成就解锁提示：同屏最多几条 */
   var TOAST_LIMIT = 3;
   /** 成就解锁提示的停留时长 */
@@ -751,6 +756,24 @@
     var number = Number(value);
     if (!isFinite(number) || number <= 0) return 0;
     return Math.floor(number);
+  }
+
+  /**
+   * 非负整数 + 上界，专门给读档用。
+   *
+   * Infinity 与 1e12 这类值都「是数字」，只做 Math.floor 会原样带进状态：
+   * 分数显示成 Infinity、rngCount 让启动时的 Rng.skip 线性空转。
+   * 非有限数或负数取 0，超过 max 取 max。
+   *
+   * @param {*} value 存档里的原始值
+   * @param {number} max 该字段的合理上界
+   * @returns {number} 0..max 的整数
+   */
+  function safeCount(value, max) {
+    var number = Number(value);
+    if (!isFinite(number) || number <= 0) return 0;
+    number = Math.floor(number);
+    return number > max ? max : number;
   }
 
   /** 推理复盘用的本局指标：优先内存局，其次落盘日志，最后退回当日战绩 */
@@ -1445,13 +1468,13 @@
     if (!Storage.validateValues(values, size)) return null;
 
     var limit = MODES[data.mode].timeLimitMs;
-    var remaining = Math.max(0, Math.floor(Number(data.remainingMs) || 0));
-    if (limit > 0) remaining = Math.min(remaining, limit);
-    else remaining = 0;
+    // 所有标量都走 safeCount：非有限数 / 负数归 0，超上界封顶。
+    // 只做 Math.floor 挡不住 Infinity 与 1e12（后者会让 rngCount 空转到冻页面）。
+    var remaining = safeCount(data.remainingMs, limit > 0 ? limit : 0);
 
-    var moves = Math.max(0, Math.floor(Number(data.moves) || 0));
+    var moves = safeCount(data.moves, SAVE_MAX_MOVES);
     var recorded = data.recorded === true;
-    var recordedMoves = Math.max(0, Math.floor(Number(data.recordedMoves) || 0));
+    var recordedMoves = safeCount(data.recordedMoves, moves);
 
     if (typeof data.recorded !== 'boolean') {
       // 早期 v2 存档没有入账标记：won 为 true 说明「达成目标」时已经记过一局，
@@ -1464,7 +1487,7 @@
 
     // 旧存档没有 daily/rngCount：按普通局处理，棋盘照常恢复。
     var daily = Rng.isDateKey(data.daily) ? data.daily : null;
-    var rngCount = daily ? Math.max(0, Math.floor(Number(data.rngCount) || 0)) : 0;
+    var rngCount = daily ? safeCount(data.rngCount, SAVE_MAX_RNG_COUNT) : 0;
     var dailyRecorded = !!daily && data.dailyRecorded === true;
     // 老存档没有 dailyRecordedMoves 时按「当前步数都已入账」处理，
     // 宁可少补，也不要在继续挑战后把已记过的步数再加一遍。
@@ -1472,7 +1495,7 @@
     if (dailyRecorded) {
       dailyRecordedMoves = data.dailyRecordedMoves === undefined
         ? moves
-        : Math.min(moves, Math.max(0, Math.floor(Number(data.dailyRecordedMoves) || 0)));
+        : safeCount(data.dailyRecordedMoves, moves);
     }
 
     // 复盘日志跟局面一起存；日期以每日键为准，普通局不认这份日志
@@ -1482,7 +1505,7 @@
     // 也不能因为缺字段把整块棋盘丢掉；普通局不进复盘口径，恒为 0。
     var perfectRecorded = 0;
     if (daily) {
-      perfectRecorded = Math.max(0, Math.floor(Number(data.perfectRecorded) || 0));
+      perfectRecorded = safeCount(data.perfectRecorded, moves);
       if (perfectRecorded > moves) perfectRecorded = moves;
     }
 
@@ -1496,11 +1519,12 @@
       size: size,
       mode: data.mode,
       values: values,
-      score: Math.max(0, Math.floor(Number(data.score) || 0)),
+      score: safeCount(data.score, SAVE_MAX_SCORE),
       won: Boolean(data.won),
       keepPlaying: Boolean(data.keepPlaying),
       remainingMs: remaining,
-      obstaclesAdded: Math.max(0, Math.floor(Number(data.obstaclesAdded) || 0)),
+      // 障碍只可能长在格子里，size² 就是硬上界
+      obstaclesAdded: safeCount(data.obstaclesAdded, size * size),
       moves: moves,
       recorded: recorded,
       recordedMoves: recordedMoves,

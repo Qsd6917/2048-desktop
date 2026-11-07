@@ -95,14 +95,29 @@
   }
 
   /**
+   * skip 允许的最大步数。
+   *
+   * 一局 240 步、每步最多取 4 个数，正常存档远小于这个量级；
+   * 挡住的是手改/损坏存档写进来的 1e12 这类值 —— 线性空转会卡住首帧。
+   */
+  var MAX_SKIP = 100000;
+
+  /**
    * 快进 n 步，用于从存档恢复序列位置。
    * 接受 create() 返回的对象，也接受裸的 mulberry32 函数。
    *
+   * 非有限（Infinity / NaN）或超过 MAX_SKIP 的步数一律按 0 处理：
+   * 宁可丢掉种子位置（这一局接下来长出的方块不再和原局面一致），
+   * 也不能为了复现而把页面冻死在启动阶段。
+   *
    * @param {object|function} rng 随机源
-   * @param {number} n 跳过的步数；负数/非数字按 0 处理
+   * @param {number} n 跳过的步数；负数/非数字/超大值按 0 处理
    */
   function skip(rng, n) {
-    var steps = Math.max(0, Math.floor(Number(n) || 0));
+    var raw = Number(n);
+    var steps = isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+    if (steps > MAX_SKIP) steps = 0;
+
     if (!rng || steps === 0) return;
 
     if (typeof rng === 'function') {

@@ -409,6 +409,40 @@ async function main() {
     Boolean(afterState) && afterState.daily === t2Key,
     afterState && afterState.daily);
 
+  /* ---------- T2b 坏存档的标量钳制 ---------- */
+  console.log('\n[T2b] 坏存档：Infinity / 超大 rngCount 不冻死页面');
+
+  const badKey = await evalJs('Game2048Rng.dateKey(new Date())');
+  await wipe();
+  await evalJs(`(function () {
+    var key = ${JSON.stringify(badKey)};
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'classic', sound: false });
+    // 手改存档：JSON 里的 1e999 会解析成 Infinity，1e12 是会让 Rng.skip 空转到冻页面的值
+    localStorage.setItem('game2048.v2.state',
+      '{"version":2,"size":4,"mode":"classic",' +
+      '"values":[[2,0,0,0],[0,4,0,0],[0,0,8,0],[0,0,0,16]],' +
+      '"score":1e999,"won":false,"keepPlaying":false,"remainingMs":1e999,' +
+      '"obstaclesAdded":1e12,"moves":3,"recordedMoves":3,"perfectRecorded":1e12,' +
+      '"daily":"' + key + '","rngCount":1e12,"dailyRecorded":true,"dailyRecordedMoves":3}');
+    return 1;
+  })()`);
+  await reload();   // 没有钳制时，Rng.skip(1e12) 会把页面冻在首帧，reload 直接超时
+
+  check('Infinity 分数折成 0 而不是显示 Infinity',
+    (await text('#score')) === '0', await text('#score'));
+
+  await press('ArrowRight');
+  await wait(500);
+  const clamped = await savedState();
+  check('超大 rngCount 被钳到 1e5 附近（不是 1e12）',
+    Boolean(clamped) && clamped.rngCount <= 100010,
+    clamped && String(clamped.rngCount));
+  check('超大 obstaclesAdded 被钳到盘面格数以内',
+    Boolean(clamped) && clamped.obstaclesAdded <= 16,
+    clamped && String(clamped.obstaclesAdded));
+  check('正常步数不被坏字段带偏', Boolean(clamped) && clamped.moves === 4,
+    clamped && String(clamped.moves));
+
   /* ---------- T3 成就面板 ---------- */
   console.log('\n[T3] 成就面板：卡片数、计数格式、Esc 与焦点');
 

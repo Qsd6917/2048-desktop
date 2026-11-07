@@ -145,6 +145,20 @@ group('skip（存档恢复）', function () {
   Rng.skip(noop, 'abc');
   eq('0 / 负数 / 非数字都不推进', noop.count, 0);
   eq('skip 不改变序列起点', noop.next(), Rng.create('x').next());
+
+  // 坏存档防线：1e12 / Infinity 若照原样线性空转，页面会在首帧前冻死。
+  // 这两条一旦退化成「真的跳」，测试会因为跑不完而超时 —— 本身就是防线。
+  const huge = Rng.create('2048-daily-20261107');
+  Rng.skip(huge, 1e12);
+  eq('1e12 步按 0 处理，不推进 count', huge.count, 0);
+  eq('超大值之后序列仍从起点开始', huge.next(), Rng.create('2048-daily-20261107').next());
+
+  const infinite = Rng.create('2048-daily-20261107');
+  Rng.skip(infinite, Infinity);
+  Rng.skip(infinite, NaN);
+  eq('Infinity / NaN 也按 0 处理', infinite.count, 0);
+  eq('坏值之后仍能继续取数', typeof infinite.next(), 'number');
+  ok('坏值之后取到的仍是有限数', isFinite(infinite.next()));
 });
 
 /* ---------- 5. 日期键 ---------- */
