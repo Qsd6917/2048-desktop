@@ -46,6 +46,7 @@
     var generation = 0;             // 清空/换尺寸时自增，丢弃过期的动画回调
     var pending = [];               // 未完成的 playMove：{ settle }
     var layoutListeners = [];
+    var metrics = null;             // 最近一次 layout 的记账：{ width, pad, gap, cell }
 
     /* ---------- 尺寸 ---------- */
 
@@ -66,9 +67,43 @@
       boardEl.style.setProperty('--cell', cell + 'px');
       boardEl.style.setProperty('--radius', radius + 'px');
 
+      // 记一份给 getCellCenter / getCellSize 用，免得每次都回读 computedStyle
+      metrics = { width: width, pad: pad, gap: gap, cell: cell };
+
       for (var i = 0; i < layoutListeners.length; i++) {
         layoutListeners[i]({ size: size, width: width, pad: pad, gap: gap, cell: cell });
       }
+    }
+
+    /** 格子边长（CSS 像素）；布局还没算过就先算一次 */
+    function getCellSize() {
+      if (!metrics) layout();
+      return metrics ? metrics.cell : 0;
+    }
+
+    /**
+     * 某个格子中心在视口中的坐标。
+     *
+     * 只消费 layout 记账下来的 --pad/--gap/--cell 和棋盘自身的位置，
+     * 不额外读样式：粒子特效要拿它当爆点，必须和方块实际落点完全对齐。
+     *
+     * @param {number} row
+     * @param {number} col
+     * @returns {{x: number, y: number}}
+     */
+    function getCellCenter(row, col) {
+      var rect = boardEl.getBoundingClientRect();
+      var cell = getCellSize();
+      var pad = metrics ? metrics.pad : 0;
+      var gap = metrics ? metrics.gap : 0;
+      var r = Number(row) || 0;
+      var c = Number(col) || 0;
+      var step = cell + gap;
+
+      return {
+        x: rect.left + pad + c * step + cell / 2,
+        y: rect.top + pad + r * step + cell / 2
+      };
     }
 
     function buildGrid() {
@@ -408,7 +443,9 @@
       playMove: playMove,
       clear: clear,
       flashDirection: flashDirection,
-      onLayoutChange: onLayoutChange
+      onLayoutChange: onLayoutChange,
+      getCellSize: getCellSize,
+      getCellCenter: getCellCenter
     };
   }
 
