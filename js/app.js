@@ -24,6 +24,7 @@
   var Audio = global.Game2048Audio;
   var Rng = global.Game2048Rng;
   var Daily = global.Game2048Daily;
+  var Duel = global.Game2048Duel;
   var Review = global.Game2048Review;
   var Achievements = global.Game2048Achievements;
   var Fx = global.Game2048Fx;
@@ -82,11 +83,15 @@
    */
   var FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-  /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
+  /**
+   * 四种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数。
+   * duel 只是把得分拆成两人份，棋盘规则仍是同一套（见 js/duel.js）。
+   */
   var MODES = {
     classic: { label: '经典', timeLimitMs: 0, obstacles: 0 },
     timed: { label: '限时', timeLimitMs: 180000, obstacles: 0 },
-    obstacle: { label: '障碍', timeLimitMs: 0, obstacles: 2 }
+    obstacle: { label: '障碍', timeLimitMs: 0, obstacles: 2 },
+    duel: { label: '双人', timeLimitMs: 0, obstacles: 0 }
   };
 
   var DIR_LABEL = { up: '上', right: '右', down: '下', left: '左' };
@@ -109,6 +114,14 @@
     grid: document.getElementById('gridLayer'),
     tiles: document.getElementById('tileLayer'),
     score: document.getElementById('score'),
+    scoreBox: document.getElementById('scoreBox'),
+    // 双人：两个玩家分数块与回合条；非双人模式整块隐藏
+    p1Block: document.getElementById('p1Block'),
+    p2Block: document.getElementById('p2Block'),
+    p1Score: document.getElementById('p1Score'),
+    p2Score: document.getElementById('p2Score'),
+    duelBar: document.getElementById('duelBar'),
+    turnLabel: document.getElementById('turnLabel'),
     best: document.getElementById('best'),
     gain: document.getElementById('scoreGain'),
     goal: document.getElementById('goal'),
@@ -283,7 +296,14 @@
     /** 连击数：本步有合并则 +1，无合并步或空档超时清零 */
     combo: 0,
     /** 连击计时点（Date.now()），用来判断空档是否已经超过 COMBO_GAP_MS */
-    comboAt: 0
+    comboAt: 0,
+    /**
+     * 双人模式：当前该谁走（0 / 1）与两人各自累计的合并得分。
+     * 只在 settings.mode === 'duel' 时有意义；state.score 仍是两人合计，
+     * 存档、战报、HUD 的「得分」都继续按总分走，拆分只发生在展示层与判胜处。
+     */
+    turn: 0,
+    players: [0, 0]
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -335,6 +355,16 @@
 
   function setStatus(text) {
     if (els.status) els.status.textContent = text;
+  }
+
+  /** 当前是不是双人对战；模式判断散在十几处，集中成一句好读也好改 */
+  function isDuel() {
+    return settings.mode === 'duel';
+  }
+
+  /** 双人比分的安全读取（坏值已在 duel.js 里归零） */
+  function playerScore(index) {
+    return Duel.scoreOf(state.players, index);
   }
 
   /** 动画中、结算浮层挡住棋盘、抽屉开着、或这一局已经结束时，都不接受新输入 */
@@ -1273,6 +1303,9 @@
 
   /** 走一步：合并组数累加，单步最多合并数与连击只取历史最大 */
   function recordMoveAchievements(mergeCount, combo) {
+    // 双人局不进成就口径：否则两人的合作盘会把「单步合并数 / 连击」刷成个人纪录
+    if (isDuel()) return;
+
     var merges = countOf(mergeCount);
     applyProfile({
       merges: merges,
@@ -1374,14 +1407,41 @@
 
   function renderHud() {
     var maxTile = G.maxValue(state.board);
+    var duel = isDuel();
     els.score.textContent = String(state.score);
     els.best.textContent = String(Math.max(stats.bestScore, state.score));
     els.goal.textContent = String(goalValue());
     els.maxTile.textContent = String(maxTile);
     els.undo.disabled = state.history.length === 0;
     els.board.setAttribute('aria-label', settings.size + '×' + settings.size + ' 棋盘');
+    renderDuelHud(duel);
     renderStage(maxTile);
     renderTimer();
+  }
+
+  /**
+   * 双人的两块比分与回合条：非双人模式整块收起，只留原来的总分。
+   * 节点齐全才写，缺一块就整段跳过（老页面 / 裁剪过的页面也不抛）。
+   *
+   * @param {boolean} duel 当前是否双人模式
+   */
+  function renderDuelHud(duel) {
+    if (els.scoreBox) els.scoreBox.hidden = duel;
+
+    if (els.p1Block && els.p2Block && els.p1Score && els.p2Score) {
+      els.p1Block.hidden = !duel;
+      els.p2Block.hidden = !duel;
+      els.p1Score.textContent = String(playerScore(0));
+      els.p2Score.textContent = String(playerScore(1));
+      // 当前走子的一方加底色：两人共用一块棋盘，最容易混的就是「该谁了」
+      els.p1Block.classList.toggle('is-active', duel && state.turn === 0);
+      els.p2Block.classList.toggle('is-active', duel && state.turn === 1);
+    }
+
+    if (els.duelBar && els.turnLabel) {
+      els.duelBar.hidden = !duel;
+      els.turnLabel.textContent = duel ? '轮到玩家 ' + (state.turn + 1) : '';
+    }
   }
 
   function renderTimer() {
@@ -1423,7 +1483,13 @@
       els.soundToggle.textContent = settings.sound ? '音效：开' : '音效：关';
     }
 
+    // 双人模式没有撤销栈（pushHistory 不入栈），按钮也就没有可撤的一步；
+    // 这里显式压住而不是等 renderHud，是因为设置面板切换时按钮会先于新局刷新。
+    if (els.undo) els.undo.disabled = isDuel() ? true : state.history.length === 0;
+
     if (els.autoplay) {
+      // 托管在双人下是禁用的：两人轮流本来就是玩法本身，AI 不能替任何一方走
+      els.autoplay.disabled = isDuel();
       els.autoplay.setAttribute('aria-pressed', autoplay ? 'true' : 'false');
       els.autoplay.classList.toggle('is-active', autoplay);
       els.autoplay.textContent = autoplay ? '托管：开' : '托管：关';
@@ -1479,7 +1545,11 @@
       dailyRecordedMoves: state.dailyRecordedMoves,
       // 复盘日志跟着局面一起存：刷新后复盘仍覆盖整局。
       // 只有每日局才写，普通局不白增体积（约 15–25KB / 240 步）。
-      reviewLog: state.dailyKey ? state.reviewLog : null
+      reviewLog: state.dailyKey ? state.reviewLog : null,
+      // 双人：轮到谁 + 两人各自累计。刷新后必须原样接着走，
+      // 否则重启会把比分抹平，等于把这一局判给后手。
+      turn: state.turn,
+      players: state.players.slice()
     });
   }
 
@@ -1545,6 +1615,15 @@
     // 代价是极老的「已通关且已入账」存档在下次结算时会多补一次 wins；新存档不会。
     var winRecorded = Boolean(data.winRecorded);
 
+    // 双人：老存档没有这两个字段时按「玩家 1 先走、两人 0 分」恢复，
+    // 不因为缺字段把整盘丢掉；两位玩家的分数与总分同一套 safeCount 口径。
+    var turn = safeCount(data.turn, 1);
+    var playersIn = Array.isArray(data.players) ? data.players : [];
+    var players = [
+      safeCount(playersIn[0], SAVE_MAX_SCORE),
+      safeCount(playersIn[1], SAVE_MAX_SCORE)
+    ];
+
     return {
       size: size,
       mode: data.mode,
@@ -1565,6 +1644,8 @@
       perfectRecorded: perfectRecorded,
       undoUsed: undoUsed,
       winRecorded: winRecorded,
+      turn: turn,
+      players: players,
       reviewLog: reviewLog
     };
   }
@@ -1572,6 +1653,10 @@
   /* ---------- 撤销栈 ---------- */
 
   function pushHistory() {
+    // 双人模式不支持撤销：干脆不存快照。撤销按钮因为没有历史自然禁用，
+    // Ctrl+Z 调到的 undo() 也会在「历史为空」处直接返回，不必另设一道拦截。
+    if (isDuel()) return;
+
     state.history.push({
       values: G.toValues(state.board),   // 走之前的棋盘（含障碍）
       score: state.score,
@@ -1720,6 +1805,9 @@
     state.dailyRecordedMoves = 0;
     state.undoUsed = false;
     state.perfectRecorded = 0;
+    // 双人：新局一律玩家 1 先走、两人 0 分；非双人模式下这两个字段不参与逻辑
+    state.turn = 0;
+    state.players = [0, 0];
     // 连击属于「这一局的手感」，换局一律从头数
     resetCombo();
     // 上一局的彩带 / 落尘不能落到新棋盘上：通关后立刻「再来一局」是最常见的路径
@@ -1754,10 +1842,16 @@
     saveState();
     startCountdown();
 
-    setStatus(
-      settings.size + '×' + settings.size + ' · ' + MODES[settings.mode].label +
-      ' · 目标 ' + goalValue() + '，用方向键开始'
-    );
+    if (isDuel()) {
+      setStatus(
+        settings.size + '×' + settings.size + ' · 双人对战 · 玩家 1 先走 · 目标 ' + goalValue()
+      );
+    } else {
+      setStatus(
+        settings.size + '×' + settings.size + ' · ' + MODES[settings.mode].label +
+        ' · 目标 ' + goalValue() + '，用方向键开始'
+      );
+    }
 
     scheduleAutoplay(AUTOPLAY_DELAY_MS);
   }
@@ -1816,6 +1910,10 @@
    * 后面的 max 更新、落盘、成就与每日结算一律照走。
    */
   function recordGame() {
+    // 双人局不进个人纪录：不写 stats、不写成就、不写每日战绩。
+    // 守卫必须在读 stats 之前 —— 这里连读档都不该发生，免得把两人合作的分算进个人最高。
+    if (isDuel()) return;
+
     var firstTime = !state.recorded;
     var extraMoves = Math.max(0, state.moves - state.recordedMoves);
 
@@ -2005,7 +2103,12 @@
 
     enqueueReviewMove(dir, valuesBefore, result.gained);
 
-    if (result.gained) addScore(result.gained);
+    if (result.gained) {
+      addScore(result.gained);
+      // 双人：这一步的得分（含一步多次合并的合计）归当前走子的人。
+      // 换人发生在 finishTurn 的判胜之后，所以此刻 state.turn 还是刚走子的人。
+      if (isDuel()) state.players = Duel.attribute(state.players, state.turn, result.gained);
+    }
     renderHud();
     playMoveSound(result);
     scheduleMergeFx(result.merges, combo, session);
@@ -2107,6 +2210,13 @@
 
     if (!state.won && !state.keepPlaying && G.hasWon(state.board, goalValue())) {
       state.won = true;
+      // 双人：完成目标的是「刚走完这一步的人」，胜负在这一刻定下。
+      // 必须赶在换人之前判，也不给「继续挑战」——继续玩会让 won 常真，
+      // 之后谁达成目标都不会再判，一局就没有胜者了。
+      if (isDuel()) {
+        finishGame('win');
+        return;
+      }
       // 托管时目标只是中途里程碑：入账、放特效，然后原地接着跑。
       // 一弹浮层就 disableAutoplay + stopCountdown，无人值守的托管会冻在目标这一步。
       if (autoplay) {
@@ -2122,14 +2232,29 @@
       return;
     }
 
-    saveState();
-    setStatus(
-      '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步'
-    );
+    // 双人：换人放在判胜与死局之后 —— 这一手若已分出胜负，turn 保持为胜者；
+    // 正常续走才轮到对手。renderHud 要再刷一次，回合标签与高亮才跟得上。
+    if (isDuel()) {
+      state.turn = Duel.nextTurn(state.turn);
+      renderHud();
+    }
 
-    // 连击状态压在日常状态后面：慢下来（>= 1200ms 空档）就该消失
+    saveState();
+    if (isDuel()) {
+      setStatus(
+        '轮到玩家 ' + (state.turn + 1) + ' · 玩家 1 ' + playerScore(0) +
+        ' 分 / 玩家 2 ' + playerScore(1) + ' 分 · 已走 ' + state.moves + ' 步'
+      );
+    } else {
+      setStatus(
+        '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步'
+      );
+    }
+
+    // 连击状态压在日常状态后面：慢下来（>= 1200ms 空档）就该消失。
+    // 双人下状态行的第一诉求是「该谁走」，所以不让连击把它盖掉。
     expireCombo();
-    if (state.combo >= COMBO_FX_AT) {
+    if (!isDuel() && state.combo >= COMBO_FX_AT) {
       setStatus(
         '连击 ×' + state.combo + ' · 得分 ' + state.score +
         ' · 最大 ' + G.maxValue(state.board)
@@ -2250,6 +2375,11 @@
   }
 
   function toggleAutoplay() {
+    // 双人下 AI 不能替任何一方走：两人轮流本身就是玩法，直接拒绝并说清楚
+    if (isDuel()) {
+      setStatus('双人模式不支持托管');
+      return;
+    }
     if (autoplay) {
       disableAutoplay();
       setStatus('托管已关闭');
@@ -2527,6 +2657,20 @@
   }
 
   function showWinOverlay() {
+    // 双人：达成目标的一方就是终点。不给「继续挑战」（见 finishTurn 的说明），
+    // 也不给战报 —— 战报按个人纪录口径出卡，双人局本来就刻意不入个人纪录。
+    if (isDuel()) {
+      var winner = state.turn + 1;
+      showOverlay(
+        'win',
+        '玩家 ' + winner + ' 达成目标',
+        '玩家 ' + winner + ' 合出了 ' + goalValue() + '。玩家 1 ' + playerScore(0) +
+          ' 分 / 玩家 2 ' + playerScore(1) + ' 分。',
+        [{ label: '再来一局', primary: true, onClick: restartSame }]
+      );
+      return;
+    }
+
     var actions = [
       { label: '继续挑战', primary: true, onClick: continuePlaying },
       { label: '再来一局', onClick: restartSame }
@@ -2558,6 +2702,21 @@
   }
 
   function showStuckOverlay() {
+    // 双人：死局按比分判胜负，相同则平局。胜者用 win 调性，平局走中性，
+    // 不把「有人赢了」的局刷成失败色。
+    if (isDuel()) {
+      var winner = Duel.winnerOf(state.players);
+      var title = winner === null ? '平局' : '玩家 ' + (winner + 1) + ' 获胜';
+      showOverlay(
+        winner === null ? 'draw' : 'win',
+        title,
+        '玩家 1 ' + playerScore(0) + ' 分 / 玩家 2 ' + playerScore(1) +
+          ' 分。棋盘上没有空格也没有可合并的方块。',
+        [{ label: '再来一局', primary: true, onClick: restartSame }]
+      );
+      return;
+    }
+
     var actions = endingActions(state.history.length > 0);
     actions.push(reportAction());
 
@@ -2857,6 +3016,9 @@
         state.winRecorded = saved.winRecorded;
         // 用过撤销标记跟着局面还原：刷新后通关仍按「用过撤销」判 undoWins
         state.undoUsed = saved.undoUsed;
+        // 双人：回合与两人比分随局面还原，刷新后接着轮到同一个人
+        state.turn = saved.turn;
+        state.players = saved.players;
 
         if (saved.daily) {
           if (saved.daily === todayKey()) {
