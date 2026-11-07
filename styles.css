@@ -141,6 +141,21 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 限时模式的倒计时；非限时模式靠 hidden 属性整段隐藏 */
+.hud-timer {
+  font-weight: 800;
+  color: #8f7a66;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-timer[hidden] {
+  display: none;
+}
+
+.hud-timer.is-urgent {
+  color: #c2452d;
+}
+
 /* ---------- 按钮 ---------- */
 .toolbar {
   display: flex;
@@ -189,6 +204,66 @@ body {
   box-shadow: 0 0 0 3px rgba(143, 122, 102, 0.34);
 }
 
+/* ---------- 尺寸 / 模式 / 音效（任务 4 的最小可用样式，视觉留给任务 5） ---------- */
+.extras {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toolbar--extras {
+  margin: 0;
+}
+
+.settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(214, 205, 196, 0.3);
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+.settings-group {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+}
+
+.btn--chip {
+  flex: 1 1 0;
+  padding: 7px 4px;
+  font-size: 12px;
+  background: #e7e0d7;
+}
+
+.btn--chip:hover:not(:disabled) {
+  background: #dcd3c8;
+}
+
+.btn--toggle.is-active,
+.btn--chip.is-active {
+  background: #8f7a66;
+  color: #f9f6f2;
+}
+
+.btn--toggle.is-active:hover:not(:disabled),
+.btn--chip.is-active:hover:not(:disabled) {
+  background: #7f6a56;
+}
+
+#soundToggle {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
 /* ---------- 棋盘 ---------- */
 .board {
   --size: 4;
@@ -210,6 +285,41 @@ body {
 
 .board:focus-visible {
   box-shadow: 0 0 0 3px rgba(143, 122, 102, 0.38);
+}
+
+/* 方向提示：整块棋盘上的一层方向光晕，不碰任何方块 */
+.board::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.board--hint-left::after,
+.board--hint-right::after,
+.board--hint-up::after,
+.board--hint-down::after {
+  opacity: 1;
+}
+
+.board--hint-left::after {
+  background: linear-gradient(to right, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+}
+
+.board--hint-right::after {
+  background: linear-gradient(to left, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+}
+
+.board--hint-up::after {
+  background: linear-gradient(to bottom, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
+}
+
+.board--hint-down::after {
+  background: linear-gradient(to top, rgba(143, 122, 102, 0.42), rgba(143, 122, 102, 0) 48%);
 }
 
 .grid-layer {
@@ -435,6 +545,8 @@ body {
 
 .overlay-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
 }
 

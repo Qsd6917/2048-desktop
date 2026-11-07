@@ -192,6 +192,7 @@
     /** 清空方块与障碍，并让所有未完成的 playMove 立即 resolve(false) */
     function clear() {
       generation += 1;
+      clearHint();   // 换局/撤销时方向提示必须一起消失
 
       var waiting = pending.slice();
       pending.length = 0;
@@ -332,6 +333,53 @@
       if (typeof callback === 'function') layoutListeners.push(callback);
     }
 
+    /* ---------- 方向提示 ---------- */
+
+    var HINT_CLASSES = [
+      'board--hint-up',
+      'board--hint-right',
+      'board--hint-down',
+      'board--hint-left'
+    ];
+    var hintTimer = null;
+
+    function clearHint() {
+      if (hintTimer !== null) {
+        global.clearTimeout(hintTimer);
+        hintTimer = null;
+      }
+      for (var i = 0; i < HINT_CLASSES.length; i++) {
+        boardEl.classList.remove(HINT_CLASSES[i]);
+      }
+    }
+
+    /**
+     * 整块棋盘上的方向光晕提示。
+     *
+     * 为什么不去高亮具体方块：computeMove 会就地改写存活方块的 row/col，
+     * 想「预演一步再回滚」根本没法还原原坐标，所以只给方向，不给目标格。
+     *
+     * @param {string|null} dir 'up' | 'right' | 'down' | 'left'；传 null 立即清除
+     * @param {number} [ms] 持续时间毫秒，默认 600；重复调用会重置计时
+     */
+    function flashDirection(dir, ms) {
+      clearHint();
+      if (!dir) return;
+
+      var cls = 'board--hint-' + dir;
+      if (HINT_CLASSES.indexOf(cls) < 0) return;
+
+      boardEl.classList.add(cls);
+
+      var duration = Number(ms);
+      if (!(duration > 0)) duration = 600;
+
+      hintTimer = global.setTimeout(function () {
+        hintTimer = null;
+        boardEl.classList.remove(cls);
+      }, duration);
+    }
+
     /* ---------- 自适应 ---------- */
     if (typeof global.ResizeObserver === 'function') {
       new global.ResizeObserver(function () {
@@ -346,6 +394,7 @@
       renderBoard: renderBoard,
       playMove: playMove,
       clear: clear,
+      flashDirection: flashDirection,
       onLayoutChange: onLayoutChange
     };
   }

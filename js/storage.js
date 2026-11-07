@@ -1,0 +1,182 @@
+/**
+ * 2048 本地存储 —— localStorage 的安全封装 + 统计读写。
+ *
+ * 设计要点：
+ *   - file:// 或隐私模式下 localStorage 可能整体不可用（连访问属性都抛异常），
+ *     这里探测一次后降级成内存对象，游戏照常能玩，只是刷新后不保留；
+ *   - 键名统一加 `game2048.v2.` 前缀，和旧版 `game2048.state` / `game2048.best` 彻底隔离；
+ *   - 值一律走 JSON，读到坏数据（手改、旧格式、截断）时返回调用方给的 fallback，
+ *     绝不让异常冒到控制器里。
+ */
+(function (global) {
+  'use strict';
+
+  /** 存档命名空间：旧版键不再读取 */
+  var PREFIX = 'game2048.v2.';
+
+  /** 控制器使用的三个键（不含前缀，写盘后是 game2048.v2.state 等） */
+  var KEYS = {
+    state: 'state',
+    stats: 'stats',
+    settings: 'settings'
+  };
+
+  /** 统计的默认形状；每次返回都是新对象，调用方随便改 */
+  var DEFAULT_STATS = {
+    games: 0,
+    bestScore: 0,
+    bestTile: 0,
+    totalMoves: 0,
+    bySize: {}
+  };
+
+  var PROBE_KEY = PREFIX + '__probe__';
+
+  /** 内存后备，键不带前缀（前缀在 get/set 里统一加） */
+  var memory = Object.create(null);
+
+  /** 探测结果：真实 localStorage 或内存替身；null 表示还没探测 */
+  var backend = null;
+
+  function createMemoryBackend() {
+    return {
+      getItem: function (key) {
+        return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : null;
+      },
+      setItem: function (key, value) {
+        memory[key] = String(value);
+      },
+      removeItem: function (key) {
+        delete memory[key];
+      }
+    };
+  }
+
+  /** 探测一次就缓存结果，避免每次读写都踩异常 */
+  function getBackend() {
+    if (backend) return backend;
+
+    try {
+      var ls = global.localStorage;
+      if (!ls) throw new Error('no localStorage');
+      ls.setItem(PROBE_KEY, '1');
+      ls.removeItem(PROBE_KEY);
+      backend = ls;
+    } catch (e) {
+      backend = createMemoryBackend();
+    }
+    return backend;
+  }
+
+  /**
+   * 读一个 JSON 值。
+   * @param {string} key 不含前缀的键名
+   * @param {*} fallback 读不到 / 解析失败时返回的值
+   */
+  function get(key, fallback) {
+    var raw;
+    try {
+      raw = getBackend().getItem(PREFIX + key);
+    } catch (e) {
+      return fallback;
+    }
+    if (raw === null || raw === undefined || raw === '') return fallback;
+
+    try {
+      var value = JSON.parse(raw);
+      return value === null || value === undefined ? fallback : value;
+    } catch (e) {
+      return fallback;   // 坏数据直接当没存过
+    }
+  }
+
+  /**
+   * 写一个 JSON 值。写失败（配额满 / 禁用）时静默吞掉。
+   * @returns {boolean} 是否真的写成功（内存降级也算成功）
+   */
+  function set(key, value) {
+    var payload;
+    try {
+      payload = JSON.stringify(value);
+    } catch (e) {
+      return false;   // 循环引用之类，无解
+    }
+    if (payload === undefined) return false;
+
+    try {
+      getBackend().setItem(PREFIX + key, payload);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function remove(key) {
+    try {
+      getBackend().removeItem(PREFIX + key);
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+
+  /** 非负整数，脏数据一律折成 0 */
+  function toCount(value) {
+    var number = Number(value);
+    if (!isFinite(number) || number <= 0) return 0;
+    return Math.floor(number);
+  }
+
+  /**
+   * 把任意来源的统计对象整理成完整结构：
+   * 缺字段补 0、多余字段丢弃、bySize 里每一项也补齐。
+   */
+  function normalizeStats(raw) {
+    var stats = {
+      games: 0,
+      bestScore: 0,
+      bestTile: 0,
+      totalMoves: 0,
+      bySize: {}
+    };
+    if (!raw || typeof raw !== 'object') return stats;
+
+    stats.games = toCount(raw.games);
+    stats.bestScore = toCount(raw.bestScore);
+    stats.bestTile = toCount(raw.bestTile);
+    stats.totalMoves = toCount(raw.totalMoves);
+
+    var bySize = raw.bySize;
+    if (bySize && typeof bySize === 'object') {
+      Object.keys(bySize).forEach(function (size) {
+        var item = bySize[size];
+        if (!item || typeof item !== 'object') return;
+        stats.bySize[size] = {
+          games: toCount(item.games),
+          bestScore: toCount(item.bestScore)
+        };
+      });
+    }
+
+    return stats;
+  }
+
+  /** 读统计；没有存档或存档损坏时返回 DEFAULT_STATS 的深拷贝 */
+  function loadStats() {
+    return normalizeStats(get(KEYS.stats, null));
+  }
+
+  function saveStats(stats) {
+    return set(KEYS.stats, normalizeStats(stats));
+  }
+
+  global.Game2048Storage = {
+    KEYS: KEYS,
+    DEFAULT_STATS: DEFAULT_STATS,
+    get: get,
+    set: set,
+    remove: remove,
+    normalizeStats: normalizeStats,
+    loadStats: loadStats,
+    saveStats: saveStats
+  };
+})(window);
