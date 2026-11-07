@@ -25,6 +25,7 @@
   var Rng = global.Game2048Rng;
   var Daily = global.Game2048Daily;
   var Review = global.Game2048Review;
+  var Fx = global.Game2048Fx;
 
   /* ---------- 常量 ---------- */
 
@@ -54,6 +55,14 @@
   var EVAL_IDLE_TIMEOUT_MS = 400;
   /** 结算时同步补算剩余评分的总预算 */
   var FLUSH_BUDGET_MS = 60;
+  /** 滑行动画时长：粒子要与合成块弹出的同一帧出现，必须和 renderer 的 SLIDE_MS 一致 */
+  var SLIDE_MS = 110;
+  /** 连击清零的空档阈值 */
+  var COMBO_GAP_MS = 1200;
+  /** 连击上限：再多也只是同一个音，没必要无限涨 */
+  var COMBO_MAX = 9;
+  /** 到这个连击数才给扫光与状态提示 */
+  var COMBO_FX_AT = 3;
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -117,6 +126,19 @@
     gridEl: els.grid,
     tileEl: els.tiles
   });
+
+  /**
+   * 全屏粒子层。canvas 缺失或模块没加载时是 null，所有调用点都必须先判空。
+   * 「减少动态效果」在创建时读一次系统偏好：这种情况下粒子与震屏全部空操作，
+   * 音效不受影响（声音不属于动态效果）。
+   */
+  var fx = Fx
+    ? Fx.create({
+        canvas: document.getElementById('fx'),
+        reduceMotion: !!(global.matchMedia &&
+          global.matchMedia('(prefers-reduced-motion: reduce)').matches)
+      })
+    : null;
 
   /* ---------- 设置 ---------- */
 
@@ -184,7 +206,11 @@
     /** 本局是否用过撤销（结果类成就用，暂不落盘） */
     undoUsed: false,
     /** 本局复盘日志（每日局才建；普通局为 null） */
-    reviewLog: null
+    reviewLog: null,
+    /** 连击数：本步有合并则 +1，无合并步或空档超时清零 */
+    combo: 0,
+    /** 连击计时点（Date.now()），用来判断空档是否已经超过 COMBO_GAP_MS */
+    comboAt: 0
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -1027,6 +1053,8 @@
     saveDailyStore(Daily.startAttempt(loadDailyStore(), state.dailyKey, Date.now()));
 
     startNewGame({ keepDaily: true });
+    if (fx) fx.sweep();
+    Audio.dailyStart();
     renderDailyBar();
     setStatus(
       '每日挑战 ' + Rng.dateLabel(state.dailyKey) +
@@ -1058,6 +1086,8 @@
     state.dailyRecorded = false;
     state.dailyRecordedMoves = 0;
     state.undoUsed = false;
+    // 连击属于「这一局的手感」，换局一律从头数
+    resetCombo();
     if (!keepDaily) {
       state.dailyKey = null;
       state.dailyRng = null;
@@ -1112,13 +1142,13 @@
 
     if (reason === 'win') {
       Audio.win();
+      if (fx) fx.confetti(120);   // 全屏彩带
       showWinOverlay();
-    } else if (reason === 'time') {
-      Audio.gameover();
-      showTimeOverlay();
     } else {
       Audio.gameover();
-      showStuckOverlay();
+      if (fx) fx.dust(40);        // 死局/超时：缓慢落尘
+      if (reason === 'time') showTimeOverlay();
+      else showStuckOverlay();
     }
 
     saveState();   // over 状态下等价于移除存档
@@ -1196,6 +1226,92 @@
 
   /* ---------- 走一步 ---------- */
 
+  /** 以 2 为底的对数（震屏强度按值分级用） */
+  function log2(value) {
+    return Math.log(value) / Math.LN2;
+  }
+
+  /** 连击归零；换局、撤销、空档超时都走这里 */
+  function resetCombo() {
+    state.combo = 0;
+    state.comboAt = 0;
+  }
+
+  /**
+   * 刷新连击。
+   * 有合并就 +1（封顶 COMBO_MAX），没有合并立刻清零；
+   * 上一步距今已超过 COMBO_GAP_MS 的算新的一串，从 1 重新数。
+   *
+   * @param {boolean} hasMerge 本步有没有合并
+   * @returns {number} 刷新后的连击数
+   */
+  function bumpCombo(hasMerge) {
+    var now = Date.now();
+
+    if (!hasMerge) {
+      resetCombo();
+      return 0;
+    }
+
+    if (state.comboAt && now - state.comboAt >= COMBO_GAP_MS) state.combo = 0;
+
+    state.combo = Math.min(COMBO_MAX, state.combo + 1);
+    state.comboAt = now;
+    return state.combo;
+  }
+
+  /** 空档超时就清零：只在收尾时检查，慢下来的玩家不该一直挂着连击 */
+  function expireCombo() {
+    if (!state.combo || !state.comboAt) return;
+    if (Date.now() - state.comboAt >= COMBO_GAP_MS) resetCombo();
+  }
+
+  /**
+   * 合并特效：音效与粒子共用这一个入口，保证听见的和看见的是同一件事。
+   * 坐标取渲染层的格子中心（视口坐标），所以粒子会从合并格飞出去、跨出棋盘。
+   *
+   * @param {Array} merges computeMove 的合并列表（含 row/col/value）
+   * @param {number} combo 本步的连击数
+   */
+  function emitMergeFx(merges, combo) {
+    if (!fx) return;
+
+    for (var i = 0; i < merges.length; i++) {
+      var merge = merges[i];
+      var pos = renderer.getCellCenter(merge.row, merge.col);
+
+      fx.burst(Fx.planBurst({
+        value: merge.value,
+        combo: combo,
+        x: pos.x,
+        y: pos.y
+      }));
+
+      if (merge.value >= 256) {
+        fx.ring(pos.x, pos.y, merge.value);
+        fx.shake(0.4 + log2(merge.value) * 0.02);
+      }
+    }
+
+    if (combo >= COMBO_FX_AT) {
+      fx.sweep();
+      Audio.comboSpark(combo);
+    }
+  }
+
+  /**
+   * 把合并特效排到滑行结束那一刻，与合成块弹出同帧。
+   * 延迟期间可能换局或撤销，回调里按 session 作废。
+   */
+  function scheduleMergeFx(merges, combo, session) {
+    if (!fx || !merges.length) return;
+
+    global.setTimeout(function () {
+      if (state.session !== session) return;
+      emitMergeFx(merges, combo);
+    }, SLIDE_MS);
+  }
+
   /**
    * 走一步（真正落子的唯一入口）。
    * @returns {boolean} 是否真的走了一步；被锁、或这个方向推不动都返回 false
@@ -1209,6 +1325,7 @@
     var session = state.session;
     // 复盘要的是「这一步之前」的盘面，必须赶在接管 result.board 之前取
     var valuesBefore = G.toValues(state.board);
+    var combo = bumpCombo(result.merges.length > 0);
 
     pushHistory();
 
@@ -1222,6 +1339,7 @@
     if (result.gained) addScore(result.gained);
     renderHud();
     playMoveSound(result);
+    scheduleMergeFx(result.merges, combo, session);
 
     renderer
       .playMove({
@@ -1242,15 +1360,20 @@
     return true;
   }
 
+  /**
+   * 本步的声音：有合并就按合并值播琶音（一步多组也不会糊），没有就是滑动声。
+   * 音高与连击加成全交给 audio + tuning，这里只负责把「发生了什么」递过去。
+   */
   function playMoveSound(result) {
     var merges = result.merges || [];
-    var best = 0;
-    for (var i = 0; i < merges.length; i++) {
-      if (merges[i].value > best) best = merges[i].value;
+    if (!merges.length) {
+      Audio.move();
+      return;
     }
-    // 一次移动里只发一个音：取最大合并值，避免多重合奏糊成一片
-    if (best) Audio.merge(best);
-    else Audio.move();
+
+    var values = [];
+    for (var i = 0; i < merges.length; i++) values.push(merges[i].value);
+    Audio.playMergeSet(values, state.combo);
   }
 
   /* ---------- 玩家输入入口 ---------- */
@@ -1323,6 +1446,15 @@
       '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步'
     );
 
+    // 连击状态压在日常状态后面：慢下来（>= 1200ms 空档）就该消失
+    expireCombo();
+    if (state.combo >= COMBO_FX_AT) {
+      setStatus(
+        '连击 ×' + state.combo + ' · 得分 ' + state.score +
+        ' · 最大 ' + G.maxValue(state.board)
+      );
+    }
+
     // 这一步刚好收尾，把动画期间缓冲的方向兑现掉；兑现成功就不再排托管
     if (flushPendingDir()) return;
 
@@ -1358,6 +1490,7 @@
     state.session += 1;   // 作废在途动画回调
     state.busy = false;
     pendingDir = null;    // 缓冲的是「撤销前那一手之后」的意图，跟着一起作废
+    resetCombo();         // 撤销把这一步的合并也退回去了，连击不该留着
 
     // 复盘跟着回退：裁掉被撤销的步，并作废它们的待办评分（必须在改 state.moves 之前算）
     trimReviewOnUndo(snapshot.moves);
