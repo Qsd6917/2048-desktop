@@ -1054,10 +1054,13 @@ async function main() {
     await wait(300);
   }
 
-  /* ---------- T18 两个抽屉互斥，Esc 关栈顶 ---------- */
+  /* ---------- T18 两个抽屉互斥，Esc 关后打开的那个 ---------- */
   console.log('\n[T18] 两个抽屉互斥：只剩一个可见，Esc 关后打开的那个');
 
   await loadBoard(BOARD_RIGHT_COL, 'classic');
+  // 先把焦点放到复盘入口：这样「打开复盘之前的元素」是 #reviewOpen 而不是 body。
+  // 否则关闭成就时会靠 fallback 回到 #achOpen，即使删掉 returnFocus 继承也照样绿。
+  await evalJs('document.getElementById("reviewOpen").focus(), 1');
   await click('#reviewOpen');
   await wait(250);
   check('复盘抽屉已打开', (await sheetHidden('reviewSheet')) === false);
@@ -1081,14 +1084,23 @@ async function main() {
   await wait(200);
   // 旧实现的 onKeyDown 先判 isReviewOpen()，Esc 关的是下层复盘，成就面板留在屏幕上
   check('Esc 关掉的是后打开的成就面板', (await sheetHidden('achSheet')) === true);
-  check('关闭后焦点回到成就入口',
-    (await evalJs('document.activeElement && document.activeElement.id')) === 'achOpen',
+  // 成就面板继承的是「打开复盘之前的元素」：不继承时这里会退回 #achOpen
+  check('关闭成就后焦点回到打开复盘之前的元素（returnFocus 被继承）',
+    (await evalJs('document.activeElement && document.activeElement.id')) === 'reviewOpen',
     await evalJs('document.activeElement && document.activeElement.id'));
 
   /* ---------- T19 抽屉的焦点陷阱 + 状态行的可访问性 ---------- */
   console.log('\n[T19] 复盘抽屉里的 Tab 不逃到背景控件');
 
   await loadBoard(BOARD_RIGHT_COL, 'classic');
+  // 面板里只有一个可聚焦元素时，「14 次 Tab 都没逃出去」说服力不够（陷阱与浏览器默认
+  // 都可能停在原地）。清掉今天的复盘记录，让抽屉落在带「去挑战」按钮的空状态，
+  // 这样面板里有两个可聚焦元素，回卷才是真的把焦点从末位送回首位。
+  await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    Game2048Storage.remove(Game2048Storage.KEYS.review + '.' + key);
+    return 1;
+  })()`);
   await click('#reviewOpen');
   await wait(250);
   check('打开后焦点落在关闭按钮上',
@@ -1096,7 +1108,7 @@ async function main() {
     await evalJs('document.activeElement && document.activeElement.id'));
 
   /**
-   * 模拟一次 Tab 并回报焦点是否还在复盘抽屉里。
+   * 模拟一次 Tab 并回报落点。
    *
    * 合成的 KeyboardEvent 不会触发浏览器默认的「移动焦点」，所以这里按全局 DOM 顺序
    * 手动补上默认行为 —— 只有应用 preventDefault（也就是焦点陷阱接住了）时才跳过这一补。
@@ -1112,6 +1124,12 @@ async function main() {
         out.push(nodes[i]);
       }
       return out;
+    }
+    function name(el) {
+      if (!el) return 'null';
+      if (el.id) return '#' + el.id;
+      var text = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 12);
+      return (el.className || el.tagName) + ':' + text;
     }
     var ev = new KeyboardEvent('keydown', {
       key: 'Tab', shiftKey: back, bubbles: true, cancelable: true
@@ -1130,24 +1148,71 @@ async function main() {
     }
 
     var sheet = document.getElementById('reviewSheet');
-    var active = document.activeElement;
     return JSON.stringify({
-      inside: sheet.contains(active),
-      who: active ? (active.id || active.className) : 'null',
+      inside: sheet.contains(document.activeElement),
+      who: name(document.activeElement),
       prevented: prevented
     });
   })(${shift ? 'true' : 'false'})`);
 
   const escaped = [];
+  const visited = {};
   let caught = 0;
   for (let i = 0; i < 14; i++) {
     const step = JSON.parse(await tabStep(false));
     if (!step.inside) escaped.push(i + ':' + step.who);
     if (step.prevented) caught++;
+    visited[step.who] = true;
   }
   // 旧实现没有任何拦住 Tab 的地方，焦点走出抽屉正文后会落到背景的 #newGame 等按钮上
   check('连按 14 次 Tab，焦点始终在复盘面板内', escaped.length === 0, escaped.join(' ') || 'ok');
+
+  const visitedNames = Object.keys(visited);
+  // 「一直没逃出去」还要证明焦点真的在面板里走动，否则单个元素原地打转也能绿
+  check('14 次 Tab 走过了面板里不止一个可聚焦元素', visitedNames.length > 1,
+    visitedNames.join(' → '));
   check('末位 Tab 被焦点陷阱接住并回卷', caught >= 1, 'caught=' + caught);
+
+  /**
+   * 单独构造一次「最后一个可聚焦元素 → 第一个」：把焦点显式放到面板末位再按 Tab，
+   * 只认应用自己完成的转移，不依赖上一条的累计结果。
+   */
+  const wrap = JSON.parse(await evalJs(`(function () {
+    var SEL = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    var sheet = document.getElementById('reviewSheet');
+    var nodes = sheet.querySelectorAll(SEL);
+    var items = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].disabled || nodes[i].offsetParent === null) continue;
+      items.push(nodes[i]);
+    }
+    function name(el) {
+      if (!el) return 'null';
+      if (el.id) return '#' + el.id;
+      return el.className || el.tagName;
+    }
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (!first || !last || first === last) {
+      return JSON.stringify({ count: items.length, ok: false, after: '不足两个可聚焦元素' });
+    }
+    last.focus();
+    var ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    var prevented = false;
+    function spy(e) { if (e === ev) prevented = e.defaultPrevented; }
+    document.addEventListener('keydown', spy);
+    document.dispatchEvent(ev);
+    document.removeEventListener('keydown', spy);
+    return JSON.stringify({
+      count: items.length,
+      first: name(first),
+      last: name(last),
+      after: name(document.activeElement),
+      ok: prevented && document.activeElement === first
+    });
+  })()`));
+  check('最后一个可聚焦元素按 Tab 回到第一个', wrap.ok === true,
+    wrap.count + ' 个元素，' + wrap.last + ' -> ' + wrap.after);
 
   const escapedBack = [];
   for (let i = 0; i < 3; i++) {
