@@ -16,11 +16,12 @@
   /** 存档命名空间：旧版键不再读取 */
   var PREFIX = 'game2048.v2.';
 
-  /** 控制器使用的三个键（不含前缀，写盘后是 game2048.v2.state 等） */
+  /** 控制器使用的四个键（不含前缀，写盘后是 game2048.v2.state 等） */
   var KEYS = {
     state: 'state',
     stats: 'stats',
-    settings: 'settings'
+    settings: 'settings',
+    daily: 'daily'
   };
 
   /** 统计的默认形状；每次返回都是新对象，调用方随便改 */

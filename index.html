@@ -38,12 +38,25 @@
       <div class="hud-item hud-timer" id="timer" hidden></div>
     </div>
 
+    <!-- 每日挑战条：同一天的种子固定，刷新可续；默认隐藏，由控制器决定展示 -->
+    <div class="daily-bar" id="dailyBar" hidden>
+      <span class="daily-bar__date" id="dailyDate"></span>
+      <span class="daily-bar__meta" id="dailyMeta"></span>
+      <button class="btn btn--chip" id="dailyStart" type="button">开始挑战</button>
+    </div>
+
     <div class="controls" id="extras">
       <button class="btn btn--primary" id="newGame" type="button">新游戏</button>
       <button class="btn" id="undo" type="button" disabled>撤销</button>
       <button class="btn" id="hint" type="button">提示</button>
       <button class="btn btn--toggle" id="autoplay" type="button" aria-pressed="false">托管：关</button>
       <button class="btn btn--toggle is-active" id="openSettings" type="button" aria-expanded="true" aria-controls="settingsPanel">设置</button>
+    </div>
+
+    <div class="controls controls--sub">
+      <button class="btn" id="dailyChallenge" type="button">每日挑战</button>
+      <button class="btn" id="reviewOpen" type="button">复盘</button>
+      <button class="btn" id="achOpen" type="button">成就</button>
     </div>
 
     <div class="settings" id="settingsPanel">
@@ -81,6 +94,8 @@
   </main>
 
   <script src="js/logic.js"></script>
+  <script src="js/rng.js"></script>
+  <script src="js/daily.js"></script>
   <script src="js/ai.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/storage.js"></script>

@@ -22,6 +22,8 @@
   var Renderer = global.Game2048Renderer;
   var Storage = global.Game2048Storage;
   var Audio = global.Game2048Audio;
+  var Rng = global.Game2048Rng;
+  var Daily = global.Game2048Daily;
 
   /* ---------- 常量 ---------- */
 
@@ -41,6 +43,8 @@
   var AI_BUDGET_MS = 120;
   /** 倒计时刷新间隔 */
   var TICK_MS = 200;
+  /** 跨日检查间隔：页面一直开着也要能在午夜后放弃旧的每日身份 */
+  var DAILY_CHECK_MS = 60000;
 
   /** 三种玩法模式；timeLimitMs 为 0 表示不计时，obstacles 是开局埋的障碍数 */
   var MODES = {
@@ -87,7 +91,12 @@
     settingsPanel: document.getElementById('settingsPanel'),
     sizeGroup: document.getElementById('sizeGroup'),
     modeGroup: document.getElementById('modeGroup'),
-    soundToggle: document.getElementById('soundToggle')
+    soundToggle: document.getElementById('soundToggle'),
+    dailyBar: document.getElementById('dailyBar'),
+    dailyDate: document.getElementById('dailyDate'),
+    dailyMeta: document.getElementById('dailyMeta'),
+    dailyStart: document.getElementById('dailyStart'),
+    dailyChallenge: document.getElementById('dailyChallenge')
   };
 
   var renderer = Renderer.create({
@@ -148,7 +157,17 @@
      */
     recorded: false,
     /** 已经计入统计的步数；继续挑战后结算时只补记多出来的部分 */
-    recordedMoves: 0
+    recordedMoves: 0,
+    /** 每日挑战的日期键（YYYYMMDD）；普通局为 null */
+    dailyKey: null,
+    /** 每日挑战的随机源；普通局为 null */
+    dailyRng: null,
+    /** 已从每日序列取了多少个数，存档后按它快进回同一位置 */
+    rngCount: 0,
+    /** 本局每日成绩是否已入账，保证一局只记一次 */
+    dailyRecorded: false,
+    /** 本局是否用过撤销（结果类成就用，暂不落盘） */
+    undoUsed: false
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -194,6 +213,88 @@
     var mm = Math.floor(total / 60);
     var ss = total % 60;
     return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  /* ---------- 每日挑战 ---------- */
+
+  /** 今天的日期键；本地时区，跨日判断以它为准 */
+  function todayKey() {
+    return Rng.dateKey(new Date());
+  }
+
+  /**
+   * 所有落子随机的唯一入口。
+   * 每日局用日期种子序列（并记下取数个数），普通局直接 Math.random。
+   */
+  function nextRandom() {
+    if (!state.dailyKey || typeof state.dailyRng !== 'function') return Math.random();
+    state.rngCount += 1;
+    return state.dailyRng();
+  }
+
+  /** 千分位自实现：不依赖 toLocaleString 的地区行为 */
+  function formatNumber(value) {
+    var text = String(Math.max(0, Math.floor(Number(value) || 0)));
+    var out = '';
+    for (var i = 0; i < text.length; i++) {
+      if (i > 0 && (text.length - i) % 3 === 0) out += ',';
+      out += text.charAt(i);
+    }
+    return out;
+  }
+
+  function loadDailyStore() {
+    return Daily.normalizeStore(Storage.get(Storage.KEYS.daily, null));
+  }
+
+  function saveDailyStore(store) {
+    Storage.set(Storage.KEYS.daily, store);
+  }
+
+  /**
+   * 重绘每日条：日期 + 第几次 / 今日最佳 + 连续天数。
+   * 处于每日局时按钮改成「重新开始」，普通局是「开始挑战」。
+   */
+  function renderDailyBar() {
+    if (!els.dailyBar) return;
+
+    var key = state.dailyKey || todayKey();
+    var store = loadDailyStore();
+    var record = Daily.bestOf(store, key);
+    var streak = Daily.streakOf(store, todayKey());
+    var meta = [];
+
+    if (record && record.attempts > 0) {
+      meta.push('第 ' + record.attempts + ' 次');
+      meta.push('今日最佳 ' + formatNumber(record.bestScore));
+    } else {
+      meta.push('今日尚未挑战');
+    }
+    if (streak.current > 0) meta.push('连续 ' + streak.current + ' 天');
+
+    els.dailyBar.hidden = false;
+    els.dailyDate.textContent = Rng.dateLabel(key);
+    els.dailyMeta.textContent = meta.join(' · ');
+    els.dailyStart.textContent = state.dailyKey ? '重新开始' : '开始挑战';
+  }
+
+  /**
+   * 跨日检查：每日局一旦跨天就放弃每日身份，棋盘照常继续，只是不再走种子序列。
+   * 每步收尾、标签页重新可见、以及 60 秒轮询各调一次。
+   */
+  function ensureDailyFresh() {
+    var today = todayKey();
+
+    if (state.dailyKey && state.dailyKey !== today) {
+      state.dailyKey = null;
+      state.dailyRng = null;
+      state.rngCount = 0;
+      state.dailyRecorded = false;
+      setStatus('新的一天 · 今日挑战已刷新');
+      saveState();
+    }
+
+    renderDailyBar();
   }
 
   /* ---------- 渲染 ---------- */
@@ -285,7 +386,12 @@
       // 入账幂等标记必须跟着局面一起存：否则「达成目标 → 继续挑战 → 关页 → 重开」
       // 之后 recorded 归零，再结算一次就会把同一局的 games 再加一遍。
       recorded: state.recorded,
-      recordedMoves: state.recordedMoves
+      recordedMoves: state.recordedMoves,
+      // 每日身份与随机序列位置必须跟局面一起存：读档后接着长出来的方块
+      // 才能和没关页面时完全一致；dailyRecorded 则保证一局只记一次成绩。
+      daily: state.dailyKey,
+      rngCount: state.rngCount,
+      dailyRecorded: state.dailyRecorded
     });
   }
 
@@ -321,6 +427,11 @@
     if (!recorded) recordedMoves = 0;
     if (recordedMoves > moves) recordedMoves = moves;
 
+    // 旧存档没有 daily/rngCount：按普通局处理，棋盘照常恢复。
+    var daily = Rng.isDateKey(data.daily) ? data.daily : null;
+    var rngCount = daily ? Math.max(0, Math.floor(Number(data.rngCount) || 0)) : 0;
+    var dailyRecorded = !!daily && data.dailyRecorded === true;
+
     return {
       size: size,
       mode: data.mode,
@@ -332,7 +443,10 @@
       obstaclesAdded: Math.max(0, Math.floor(Number(data.obstaclesAdded) || 0)),
       moves: moves,
       recorded: recorded,
-      recordedMoves: recordedMoves
+      recordedMoves: recordedMoves,
+      daily: daily,
+      rngCount: rngCount,
+      dailyRecorded: dailyRecorded
     };
   }
 
@@ -406,7 +520,38 @@
 
   /* ---------- 一局的开始与结束 ---------- */
 
-  function startNewGame() {
+  /**
+   * 进入今天的每日挑战：固定 4×4 经典，随机序列由日期种子决定。
+   * 每调一次算一次新的尝试（attempts +1），所以从界面点「重新开始」也走这里。
+   */
+  function startDaily() {
+    state.dailyKey = todayKey();
+    state.dailyRng = Rng.create(state.dailyKey).next;
+    state.rngCount = 0;
+    state.dailyRecorded = false;
+
+    settings.size = 4;
+    settings.mode = 'classic';
+    persistSettings();
+
+    saveDailyStore(Daily.startAttempt(loadDailyStore(), state.dailyKey, Date.now()));
+
+    startNewGame({ keepDaily: true });
+    renderDailyBar();
+    setStatus(
+      '每日挑战 ' + Rng.dateLabel(state.dailyKey) +
+      ' · 4×4 经典 · 同一天开局固定，刷新可续'
+    );
+  }
+
+  /**
+   * 开新局。
+   * @param {{keepDaily?: boolean}} options keepDaily 为 true 时保留每日身份与随机序列，
+   *        供 startDaily 使用；普通重开一律回到 Math.random。
+   */
+  function startNewGame(options) {
+    var keepDaily = !!options && options.keepDaily === true;
+
     stopCountdown();
     clearAutoplayTimer();
 
@@ -420,13 +565,21 @@
     state.moves = 0;
     state.recorded = false;
     state.recordedMoves = 0;
+    state.dailyRecorded = false;
+    state.undoUsed = false;
+    if (!keepDaily) {
+      state.dailyKey = null;
+      state.dailyRng = null;
+      state.rngCount = 0;
+    }
     pendingDir = null;
     state.remainingMs = MODES[settings.mode].timeLimitMs;
     state.obstaclesAdded = MODES[settings.mode].obstacles;
 
     var game = G.newGame({
       size: settings.size,
-      obstacleCount: MODES[settings.mode].obstacles
+      obstacleCount: MODES[settings.mode].obstacles,
+      random: nextRandom
     });
     state.board = game.board;
 
@@ -438,6 +591,7 @@
     hideOverlay();
     renderHud();
     syncControls();
+    renderDailyBar();
     saveState();
     startCountdown();
 
@@ -491,6 +645,7 @@
     var extraMoves = Math.max(0, state.moves - state.recordedMoves);
     if (!firstTime && extraMoves === 0) return;   // 继续挑战期间没有新进展，不必写盘
 
+    var tile = G.maxValue(state.board);
     stats = Storage.loadStats();
 
     if (firstTime) {
@@ -501,12 +656,24 @@
       bucket.games += 1;
       stats.bySize[key] = bucket;
       state.recorded = true;
+
+      // 每日成绩一局只记一次：dailyRecorded 跟着存档走，
+      // 「达标 → 继续挑战 → 关页 → 再结算」不会把同一局记两遍。
+      if (state.dailyKey && state.dailyKey === todayKey() && !state.dailyRecorded) {
+        saveDailyStore(Daily.recordResult(loadDailyStore(), state.dailyKey, {
+          score: state.score,
+          moves: state.moves,
+          maxTile: tile,
+          won: state.won
+        }, Date.now()));
+        state.dailyRecorded = true;
+        renderDailyBar();
+      }
     }
 
     stats.totalMoves += extraMoves;
     state.recordedMoves += extraMoves;
 
-    var tile = G.maxValue(state.board);
     if (state.score > stats.bestScore) stats.bestScore = state.score;
     if (tile > stats.bestTile) stats.bestTile = tile;
 
@@ -534,7 +701,7 @@
 
     state.busy = true;
     state.board = result.board;    // computeMove 的结果只能消费一次，直接接管
-    var spawned = G.spawnRandom(state.board);
+    var spawned = G.spawnRandom(state.board, nextRandom);
     state.moves += 1;
 
     if (result.gained) addScore(result.gained);
@@ -611,8 +778,10 @@
     return true;
   }
 
-  /** 动画播完之后的收尾：长障碍、判胜负、决定是否继续托管 */
+  /** 动画播完之后的收尾：跨日检查、长障碍、判胜负、决定是否继续托管 */
   function finishTurn() {
+    ensureDailyFresh();
+
     if (state.over) {   // 动画期间时间到，已经结算
       state.busy = false;
       return;
@@ -652,7 +821,7 @@
   }
 
   function addObstacleNow() {
-    var obstacle = G.addObstacle(state.board);
+    var obstacle = G.addObstacle(state.board, nextRandom);
     if (!obstacle) return;   // 没有空格，这一步就不长了
 
     state.obstaclesAdded += 1;
@@ -670,6 +839,7 @@
 
     disableAutoplay();
     stopCountdown();
+    state.undoUsed = true;
     state.session += 1;   // 作废在途动画回调
     state.busy = false;
     pendingDir = null;    // 缓冲的是「撤销前那一手之后」的意图，跟着一起作废
@@ -967,10 +1137,18 @@
     if (els.openSettings) els.openSettings.addEventListener('click', toggleSettingsPanel);
     if (els.soundToggle) els.soundToggle.addEventListener('click', toggleSound);
 
+    // 每日条里的按钮与第二排入口都进同一条路径（reviewOpen / achOpen 由后续任务接）
+    if (els.dailyStart) els.dailyStart.addEventListener('click', startDaily);
+    if (els.dailyChallenge) els.dailyChallenge.addEventListener('click', startDaily);
+
     bindChoiceGroup(els.sizeGroup, 'size', setSize);
     bindChoiceGroup(els.modeGroup, 'mode', setMode);
 
     document.addEventListener('keydown', onKeyDown);
+    // 页面在后台时计时器可能被节流，回到前台时补一次跨日检查
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) ensureDailyFresh();
+    });
 
     els.board.addEventListener('pointerdown', onPointerDown);
     els.board.addEventListener('pointerup', onPointerUp);
@@ -987,9 +1165,11 @@
     stats = Storage.loadStats();
 
     bindControls();
+    global.setInterval(ensureDailyFresh, DAILY_CHECK_MS);
 
     var saved = readSaved();
     var restored = false;
+    var dailyExpired = false;
 
     if (saved) {
       // 存档比设置更权威：它记录的才是真正在玩的局面
@@ -1014,6 +1194,21 @@
         // 入账标记跟着局面一起还原，保证同一局永远只记一次
         state.recorded = saved.recorded;
         state.recordedMoves = saved.recordedMoves;
+
+        if (saved.daily) {
+          if (saved.daily === todayKey()) {
+            // 同一天：恢复每日身份，并把随机序列快进到存档时的位置
+            state.dailyKey = saved.daily;
+            state.rngCount = saved.rngCount;
+            state.dailyRecorded = saved.dailyRecorded;
+            var restoredRng = Rng.create(state.dailyKey);
+            Rng.skip(restoredRng, state.rngCount);
+            state.dailyRng = restoredRng.next;
+          } else {
+            // 跨日：盘面照常恢复，只是不再属于今天的挑战
+            dailyExpired = true;
+          }
+        }
       }
     }
 
@@ -1034,13 +1229,18 @@
     hideOverlay();
     renderHud();
     syncControls();
+    renderDailyBar();
 
     if (MODES[settings.mode].timeLimitMs > 0) startCountdown();
 
-    setStatus(
-      '接着上一局 · ' + settings.size + '×' + settings.size + ' · ' +
-      MODES[settings.mode].label + ' · 得分 ' + state.score
-    );
+    if (dailyExpired) {
+      setStatus('昨日挑战已结束 · 今日可重新挑战');
+    } else {
+      setStatus(
+        '接着上一局 · ' + settings.size + '×' + settings.size + ' · ' +
+        MODES[settings.mode].label + ' · 得分 ' + state.score
+      );
+    }
   }
 
   init();
