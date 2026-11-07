@@ -498,6 +498,32 @@
   }
 
   /**
+   * 启动时清掉过期的复盘键。
+   *
+   * 每天一份 25–30KB 的复盘，攒到 150–200 天就会吃满 5MB 配额；配额一满，
+   * Storage.set 降级到内存 —— 之后整局只活在内存里，刷新即失。
+   * 键名能按日期算出来（Review.staleKeys），不必枚举 localStorage。
+   *
+   * 清理是「顺手做的好事」：任何一步失败都必须吞掉，不能影响启动。
+   */
+  function purgeStaleReviews() {
+    var stale;
+    try {
+      stale = Review.staleKeys(todayKey(), Review.KEEP_DAYS, Review.MAX_AGE_DAYS);
+    } catch (e) {
+      return;   // 算不出键就当没有过期数据：启动优先
+    }
+
+    for (var i = 0; i < stale.length; i++) {
+      try {
+        Storage.remove(stale[i]);
+      } catch (e) {
+        /* 删不掉就留着，下一次启动再试 */
+      }
+    }
+  }
+
+  /**
    * 换局时重置复盘：每日局建一份空日志，普通局置 null。
    * 队列与在途回调一起清掉，免得上一步的评分写进新一局。
    */
@@ -692,7 +718,11 @@
   }
 
   /** 一条关键失误：左边 4×4 迷你盘面，右边两行文字 */
-  function blunderHtml(item) {
+  function blunderHtml(entry) {
+    // 落盘 summary 可能被手改：条目不是对象、delta 不是数字都按空值渲染，
+    // 绝不让脏数据把整个复盘抽屉炸掉（那会连带停掉限时局的计时）
+    var item = entry && typeof entry === 'object' ? entry : {};
+    var delta = isFinite(Number(item.delta)) ? Number(item.delta) : 0;
     var rows = Array.isArray(item.values) ? item.values : [];
     var cells = [];
 
@@ -716,7 +746,7 @@
       '<div class="blunder__text">' +
         '<p class="blunder__title">第 ' + item.index + ' 步 向' + escapeHtml(dirLabel) + '</p>' +
         '<p class="blunder__sub">AI 建议 向' + escapeHtml(bestLabel) +
-          ' · 亏 ' + item.delta.toFixed(1) + '</p>' +
+          ' · 亏 ' + delta.toFixed(1) + '</p>' +
       '</div>' +
     '</div>';
   }
@@ -798,9 +828,13 @@
 
     var store = loadDailyStore();
     var record = Daily.bestOf(store, key);
-    // meta 与 summary 必须跟同一份日志走：显示落盘日志时用落盘的本局指标
+    // meta 与 summary 必须跟同一份日志走：显示落盘日志时用落盘的本局指标。
     var meta = reviewMetaOf(liveLog, stored, record);
-    var summary = log.summary && !liveLog ? log.summary : Review.summarize(log, meta);
+    // 落盘 summary 不可信（{}、手改、写截断），字段不齐就按日志现场重算 ——
+    // 下游渲染直接 .toFixed / .length，脏数据会在 stopCountdown() 之后炸掉抽屉。
+    var summary = log.summary && !liveLog && Review.isUsableSummary(log.summary)
+      ? log.summary
+      : Review.summarize(log, meta);
 
     // 近 7 日按「不含今天」算：recent 取 8 天，丢掉末位今天
     var history = [];
@@ -823,15 +857,30 @@
     renderReview(log, summary, Review.analyze(summary, ctx), ctx);
   }
 
+  /** 渲染失败时的兜底内容：抽屉照常打开，玩家能关掉它，计时就会恢复 */
+  function renderReviewError() {
+    if (!els.reviewBody) return;
+    els.reviewBody.innerHTML = '<div class="review-empty">' +
+      '<p class="review-empty__text">复盘数据读不出来，换一局再试试</p>' +
+    '</div>';
+  }
+
   function openReview() {
     if (!els.reviewSheet) return;
 
     stopCountdown();   // 限时局看复盘不计时：抽屉开着时不能被判超时
     reviewReturnFocus = document.activeElement;
-    renderReviewSheet();
-    els.reviewSheet.hidden = false;
-    document.body.classList.add('is-sheet-open');
-    if (els.reviewClose) els.reviewClose.focus();
+    try {
+      renderReviewSheet();
+    } catch (err) {
+      // 计时已经停了，这里绝不能再抛出去：否则抽屉没打开、closeReview 也永远不会被调用，
+      // 限时局从此不扣时。宁可显示一句错误提示，让玩家关掉抽屉恢复计时。
+      renderReviewError();
+    } finally {
+      els.reviewSheet.hidden = false;
+      document.body.classList.add('is-sheet-open');
+      if (els.reviewClose) els.reviewClose.focus();
+    }
   }
 
   function closeReview() {
@@ -2201,6 +2250,9 @@
     settings = normalizeSettings(Storage.get(Storage.KEYS.settings, null));
     Audio.setEnabled(settings.sound);
     stats = Storage.loadStats();
+
+    // 先清理过期的每日复盘，再让后续写入去争配额
+    purgeStaleReviews();
 
     bindControls();
     renderAchCount();

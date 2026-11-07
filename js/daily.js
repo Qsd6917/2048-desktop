@@ -296,6 +296,8 @@
     recordResult: recordResult,
     streakOf: streakOf,
     recent: recent,
-    bestOf: bestOf
+    bestOf: bestOf,
+    // 日期键平移：复盘淘汰键（review.staleKeys）按天回看时复用这一份，不另抄一份日历逻辑
+    shiftKey: shiftKey
   };
 });

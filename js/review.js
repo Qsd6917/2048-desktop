@@ -11,16 +11,17 @@
  *
  * 所有「写」操作都返回新对象，入参永远不被修改 —— 控制器可以放心先算后存。
  * summarize / analyze 全部规则式生成，同一输入必然同一输出，便于测试。
+ *
+ * 依赖 daily.js 只为日期键平移（staleKeys 按天回看），不读写存储。
  */
 (function (root, factory) {
   'use strict';
-  var api = factory();
   if (typeof module === 'object' && module.exports) {
-    module.exports = api;
+    module.exports = factory(require('./daily.js'));
   } else {
-    root.Game2048Review = api;
+    root.Game2048Review = factory(root.Game2048Daily);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Daily) {
   'use strict';
 
   /** 日志结构版本；不兼容时靠它识别 */
@@ -31,6 +32,12 @@
 
   /** 关键失误最多列几步 */
   var WORST_LIMIT = 5;
+
+  /** 复盘日志默认保留天数（含今天）；再早的 review.<date> 启动时删掉 */
+  var KEEP_DAYS = 14;
+
+  /** 复盘日志默认最多回看多少天：比 keepDays 更早的键同样在清理范围内 */
+  var MAX_AGE_DAYS = 120;
 
   /** 方向取值域，顺序与 ai.js 一致 */
   var DIRS = ['up', 'right', 'down', 'left'];
@@ -215,6 +222,53 @@
       return stored;
     }
     return null;
+  }
+
+  /**
+   * 需要清理的复盘键。
+   *
+   * 「保留最近 keepDays 天」用键名算，不需要枚举 localStorage：
+   * 从 keepDays + 1 天前一直列到 maxAge 天前，恰好 maxAge - keepDays 个键。
+   * 今天的键永远不在结果里（正在玩 / 刚结算的那份必须留着）。
+   *
+   * @param {string} todayKey 今天的日期键（YYYYMMDD）
+   * @param {number} [keepDays] 保留天数（含今天），默认 14
+   * @param {number} [maxAge] 最多回看多少天，默认 120
+   * @returns {Array<string>} 形如 ['review.20261023', ...]，非法输入返回空数组
+   */
+  function staleKeys(todayKey, keepDays, maxAge) {
+    var keys = [];
+    var today = typeof todayKey === 'string' ? todayKey : '';
+    if (!today || !Daily || typeof Daily.shiftKey !== 'function') return keys;
+
+    // 非法日期键平移恒返回空串，提前挡掉，免得白跑 maxAge 次
+    if (!Daily.shiftKey(today, 0)) return keys;
+
+    var keep = toCount(keepDays === undefined ? KEEP_DAYS : keepDays);
+    var max = toCount(maxAge === undefined ? MAX_AGE_DAYS : maxAge);
+
+    for (var ago = keep + 1; ago <= max; ago++) {
+      var key = Daily.shiftKey(today, -ago);
+      if (key) keys.push('review.' + key);
+    }
+    return keys;
+  }
+
+  /**
+   * 落盘的 summary 是否还能直接复用。
+   *
+   * 存档可能被手改 / 写截断（summary 是 {}、worst 不是数组、指标是字符串），
+   * 这种数据一旦交给界面渲染就会抛异常；这里只认「字段齐全且是数字」的那种，
+   * 其余的让调用方用日志现场重算。
+   *
+   * @param {*} s 落盘的 summary
+   * @returns {boolean}
+   */
+  function isUsableSummary(s) {
+    if (!s || typeof s !== 'object') return false;
+    if (!Array.isArray(s.worst)) return false;
+
+    return isFiniteNumber(s.avgLoss) && isFiniteNumber(s.consistency) && isFiniteNumber(s.scored);
   }
 
   /**
@@ -448,6 +502,8 @@
     LOG_VERSION: LOG_VERSION,
     MAX_MOVES: MAX_MOVES,
     WORST_LIMIT: WORST_LIMIT,
+    KEEP_DAYS: KEEP_DAYS,
+    MAX_AGE_DAYS: MAX_AGE_DAYS,
     DIRS: DIRS,
     DIR_LABEL: DIR_LABEL,
     TILE_COLORS: TILE_COLORS,
@@ -456,6 +512,8 @@
     appendMove: appendMove,
     normalizeLog: normalizeLog,
     pickLog: pickLog,
+    staleKeys: staleKeys,
+    isUsableSummary: isUsableSummary,
     summarize: summarize,
     analyze: analyze
   };

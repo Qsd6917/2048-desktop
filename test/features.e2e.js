@@ -454,6 +454,100 @@ async function main() {
   check('点「去挑战」后进入每日挑战', /第 1 次/.test(await text('#dailyMeta')),
     await text('#dailyMeta'));
 
+  /* ---------- T4b 落盘 summary 被写坏时，复盘抽屉与计时都要活着 ---------- */
+  console.log('\n[T4b] 落盘 summary 是 {} 时：抽屉照常打开，关闭后计时恢复');
+
+  await wipe();
+  await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    var grid = [[1024, 512, 64, 8], [32, 128, 16, 4], [8, 32, 2, 0], [4, 16, 0, 0]];
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'timed', sound: false });
+    Game2048Storage.set(Game2048Storage.KEYS.state, {
+      version: 2, size: 4, mode: 'timed',
+      values: [[2, 2, 0, 0], [4, 8, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+      score: 0, won: false, keepPlaying: false,
+      remainingMs: 60000, obstaclesAdded: 0, moves: 0,
+      recorded: false, recordedMoves: 0,
+      daily: key, rngCount: 0, dailyRecorded: false, dailyRecordedMoves: 0,
+      // 进行中的日志还是空壳，复盘只能拿落盘的那份（summary 已经被写坏）
+      reviewLog: { version: 1, date: key, moves: [], summary: null }
+    });
+    Game2048Storage.set(Game2048Storage.KEYS.review + '.' + key, {
+      version: 1, date: key,
+      moves: [
+        { d: 'left', v: grid, g: 8, b: 'left', s: 10, t: 10 },
+        { d: 'right', v: grid, g: 8, b: 'up', s: 12, t: 9 }
+      ],
+      summary: {},   // 手改 / 写截断的样子
+      meta: { score: 480, moves: 2, maxTile: 1024, won: false }
+    });
+    return 1;
+  })()`);
+  await reload();
+
+  const timerBefore = await text('#timer');
+  await click('#reviewOpen');
+  await wait(1200);
+
+  check('脏 summary 也能打开复盘抽屉', (await hidden('#reviewSheet')) === false);
+  check('抽屉用日志重算出了四格指标',
+    (await evalJs('document.querySelectorAll("#reviewBody .metrics .metric").length')) === 4);
+  const consistency = await evalJs(`(function () {
+    var items = document.querySelectorAll('#reviewBody .metric');
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].querySelector('.metric__label').textContent === '一致性') {
+        return items[i].querySelector('.metric__value').textContent;
+      }
+    }
+    return null;
+  })()`);
+  check('一致性由日志重算（2 步里对 1 步 = 50%）', consistency === '50%', consistency);
+  check('抽屉打开期间限时局不扣时', (await text('#timer')) === timerBefore,
+    timerBefore + ' -> ' + (await text('#timer')));
+
+  await press('Escape');
+  await wait(1400);
+  check('关闭复盘后限时局恢复计时', (await text('#timer')) !== timerBefore,
+    timerBefore + ' -> ' + (await text('#timer')));
+
+  /* ---------- T4c 启动时清理过期复盘键 ---------- */
+  console.log('\n[T4c] 启动时清掉过期 review.<日期>，保留期内的不动');
+
+  await evalJs(`(function () {
+    var today = Game2048Rng.dateKey(new Date());
+    var old = Game2048Daily.shiftKey(today, -100);           // 超出保留期、但在 maxAge 120 天以内
+    var yesterday = Game2048Daily.shiftKey(today, -1);       // 保留期内
+    localStorage.setItem('game2048.v2.review.' + old, '{"moves":[]}');
+    Game2048Storage.set('review.' + yesterday, { version: 1, date: yesterday, moves: [], summary: null });
+    return 1;
+  })()`);
+
+  const purgeList = JSON.parse(await evalJs(`(function () {
+    var today = Game2048Rng.dateKey(new Date());
+    var old = Game2048Daily.shiftKey(today, -100);
+    var list = Game2048Review.staleKeys(today, 14, 120);
+    return JSON.stringify({ length: list.length, old: old, hasOld: list.indexOf('review.' + old) >= 0 });
+  })()`));
+  check('页面里算出的清理列表覆盖 100 天前的键',
+    purgeList.length === 106 && purgeList.hasOld === true, JSON.stringify(purgeList));
+
+  await reload();
+
+  const purge = JSON.parse(await evalJs(`(function () {
+    var today = Game2048Rng.dateKey(new Date());
+    var old = Game2048Daily.shiftKey(today, -100);
+    var yesterday = Game2048Daily.shiftKey(today, -1);
+    return JSON.stringify({
+      today: localStorage.getItem('game2048.v2.review.' + today) !== null,
+      yesterday: localStorage.getItem('game2048.v2.review.' + yesterday) !== null,
+      old: localStorage.getItem('game2048.v2.review.' + old) !== null
+    });
+  })()`));
+
+  check('超出保留期的复盘键被清掉', purge.old === false, JSON.stringify(purge));
+  check('保留期内的复盘键原样还在', purge.today === true && purge.yesterday === true,
+    JSON.stringify(purge));
+
   /* ---------- T5 整屏粒子层 ---------- */
   console.log('\n[T5] 整屏粒子层');
 

@@ -187,6 +187,104 @@ group('normalizeLog 洗存档数据', () => {
   eq('保留最新一步', capped.moves[239].g, 244);
 });
 
+/* ---------- staleKeys / isUsableSummary ---------- */
+
+group('staleKeys 只列出该清理的复盘键', () => {
+  const keys = Review.staleKeys('20261107', 14, 120);
+
+  eq('长度 = maxAge - keepDays', keys.length, 106);
+  ok('不含今天（正在玩 / 刚结算的那份必须留着）', keys.indexOf('review.20261107') < 0);
+  ok('保留期内（14 天）一个都不删',
+    keys.indexOf('review.20261106') < 0 && keys.indexOf('review.20261024') < 0);
+  ok('保留期外第一天开始删', keys.indexOf('review.20261023') >= 0);
+  ok('含 maxAge 当天', keys.indexOf('review.20260710') >= 0);
+  ok('比 maxAge 更早的不在列表里（如 20260709 / 19980101）',
+    keys.indexOf('review.20260709') < 0 && keys.indexOf('review.19980101') < 0);
+  ok('每个 key 都以 review. 开头且日期是 8 位数字',
+    keys.every((k) => k.indexOf('review.') === 0 && /^\d{8}$/.test(k.slice(7))),
+    keys[0] + ' … ' + keys[keys.length - 1]);
+  ok('没有重复键', new Set(keys).size === keys.length);
+
+  // 跨年窗口：20260210 往前 120 天落在上一年，20251231 / 20260101 都在清理范围内
+  const crossYear = Review.staleKeys('20260210', 14, 120);
+  ok('跨年窗口能同时列出 20251231 与 20260101',
+    crossYear.indexOf('review.20251231') >= 0 && crossYear.indexOf('review.20260101') >= 0);
+  ok('跨年窗口同样不含当天的键', crossYear.indexOf('review.20260210') < 0);
+
+  eq('不传 keepDays/maxAge 时用默认 14 / 120', Review.staleKeys('20261107'), keys);
+  eq('非法日期键返回空数组', Review.staleKeys('2026-11-07', 14, 120), []);
+  eq('maxAge 不大于 keepDays 时没有要删的', Review.staleKeys('20261107', 120, 120), []);
+});
+
+group('isUsableSummary 只认字段齐全的落盘 summary', () => {
+  const good = Review.summarize(
+    logFrom([['left', 'left', 10, 10], ['right', 'up', 12, 9]]),
+    { score: 30, moves: 2, maxTile: 8, won: false }
+  );
+
+  ok('summarize 的产物一定可用', Review.isUsableSummary(good) === true);
+  ok('空对象不可用', Review.isUsableSummary({}) === false);
+  ok('worst 不是数组不可用', Review.isUsableSummary({ worst: 'x' }) === false);
+  ok('指标是字符串不可用',
+    Review.isUsableSummary({ worst: [], avgLoss: '1.2', consistency: 0, scored: 0 }) === false);
+  ok('缺 scored 不可用',
+    Review.isUsableSummary({ worst: [], avgLoss: 1, consistency: 0.5 }) === false);
+  ok('缺 consistency 不可用',
+    Review.isUsableSummary({ worst: [], avgLoss: 1, scored: 2 }) === false);
+  ok('null / 字符串 / 数组都不可用',
+    Review.isUsableSummary(null) === false && Review.isUsableSummary('{}') === false &&
+      Review.isUsableSummary([]) === false);
+});
+
+group('落盘 summary 被写成 {} 时退回日志重算', () => {
+  const log = logFrom([['left', 'left', 10, 10], ['right', 'up', 12, 9]]);
+  const meta = { score: 30, moves: 2, maxTile: 8, won: false };
+  // 模拟 review.<today> 落盘成 { summary: {} }（手改 / 写截断）
+  const stored = { version: 1, date: '20261107', moves: log.moves, summary: {}, meta: meta };
+
+  ok('落盘的 {} 判为不可用', Review.isUsableSummary(stored.summary) === false);
+
+  const summary = Review.isUsableSummary(stored.summary)
+    ? stored.summary
+    : Review.summarize(stored, meta);
+
+  eq('重算出的 summary 字段齐全',
+    [summary.scored, summary.matched, typeof summary.avgLoss, Array.isArray(summary.worst)],
+    [2, 1, 'number', true]);
+
+  const out = Review.analyze(summary, {
+    dateLabel: '11月7日', score: 30, maxTile: 8, moves: 2, history: [], streak: 0, bestToday: 30
+  });
+  ok('文案能正常生成（下游 toFixed / length 不会抛）',
+    out.headline.indexOf('30 分') >= 0 && out.paragraphs.length === 3 && out.tips.length === 3,
+    out.headline);
+});
+
+group('评分补算回流后 summary 与半成品不同', () => {
+  // 24 步待评分；结算瞬间的 60ms 预算只够算 2 步（模拟 flushEvalQueue）
+  const rows = [];
+  for (let i = 0; i < 24; i++) rows.push(['left', null, null, null]);
+  const log = logFrom(rows);
+  const meta = { score: 160, moves: 24, maxTile: 1024, won: false };
+
+  log.moves[0] = { d: 'left', v: GRID, g: 8, b: 'left', s: 10, t: 10 };
+  log.moves[1] = { d: 'left', v: GRID, g: 8, b: 'up', s: 12, t: 9 };
+  const partial = Review.summarize(log, meta);
+
+  // 模拟空闲回调把队列排空：剩下的步全部补上评分
+  for (let i = 2; i < log.moves.length; i++) {
+    log.moves[i] = { d: 'left', v: GRID, g: 8, b: 'left', s: 10, t: 10 };
+  }
+  const full = Review.summarize(log, meta);
+
+  eq('结算瞬间只统计算完的 2 步', partial.scored, 2);
+  eq('排空后统计全部 24 步', full.scored, 24);
+  ok('两次 summary 不同（回流确实会改变落盘内容）', str(partial) !== str(full));
+  ok('半成品的平均亏损被 2 步样本放大',
+    partial.avgLoss > full.avgLoss, partial.avgLoss + ' vs ' + full.avgLoss);
+  eq('同一日志重算幂等', Review.summarize(log, meta), full);
+});
+
 /* ---------- summarize ---------- */
 
 group('summarize 的一致率 / 平均亏损 / 最差步', () => {
