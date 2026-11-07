@@ -59,27 +59,66 @@
     };
   }
 
+  /** 把一个已知的全前缀键从旧后端读进内存；读不到 / 读失败就跳过 */
+  function copyKey(previous, fullKey) {
+    try {
+      var raw = previous.getItem(fullKey);
+      if (raw !== null && raw !== undefined) memory[fullKey] = String(raw);
+    } catch (e) {
+      /* 旧后端已经连读都读不了，那就只能放弃这部分数据 */
+    }
+  }
+
+  /**
+   * 整体搬迁：遍历旧后端的全部键，凡是本应用前缀的整条搬进内存。
+   *
+   * 只按 KEYS 搬是不够的：复盘键是 review.<YYYYMMDD> 这种动态键，
+   * 不在 KEYS 里。配额降级后当天的复盘会从会话里消失，
+   * 复盘抽屉直接退回空状态。
+   *
+   * @returns {boolean} 旧后端支持遍历则返回 true（即使中途跳过某些键）
+   */
+  function migrateAllKeys(previous) {
+    if (typeof previous.length !== 'number' || typeof previous.key !== 'function') return false;
+
+    var total = previous.length;
+    for (var i = 0; i < total; i++) {
+      var fullKey = previous.key(i);
+      if (typeof fullKey !== 'string' || fullKey.indexOf(PREFIX) !== 0) continue;
+      copyKey(previous, fullKey);
+    }
+    return true;
+  }
+
   /**
    * 切换到内存后备。
    *
-   * 切换前先把旧后端里还能读到的已知键（含全前缀）搬进内存：
+   * 切换前先把旧后端里还能读到的键（含全前缀）搬进内存：
    * 典型场景是「探测时写得进去、玩到一半配额满」——若直接换空内存，
    * 界面上的历史统计会当场归零，比存不进去更吓人。
+   *
+   * 优先整体搬迁（连 review.<date> 这类动态键一起带走）；
+   * 旧后端不支持 length/key 或中途抛异常时，退回按 KEYS 逐个搬。
    */
   function degradeToMemory() {
     var previous = backend;
     var next = createMemoryBackend();
+
     if (previous) {
-      Object.keys(KEYS).forEach(function (name) {
-        var fullKey = PREFIX + KEYS[name];
-        try {
-          var raw = previous.getItem(fullKey);
-          if (raw !== null && raw !== undefined) memory[fullKey] = String(raw);
-        } catch (e) {
-          /* 旧后端已经连读都读不了，那就只能放弃这部分数据 */
-        }
-      });
+      var migrated = false;
+      try {
+        migrated = migrateAllKeys(previous);
+      } catch (e) {
+        migrated = false;   // 遍历到一半失败：已经搬进去的留着，剩下的按 KEYS 补
+      }
+
+      if (!migrated) {
+        Object.keys(KEYS).forEach(function (name) {
+          copyKey(previous, PREFIX + KEYS[name]);
+        });
+      }
     }
+
     backend = next;
   }
 
