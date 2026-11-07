@@ -340,6 +340,46 @@ group('evaluate', () => {
     A.evaluate(profileWith({ modeWins: { obstacle: 1 } }), now).unlockedNow, ['obstacle_win']);
 });
 
+/* ---------- perfectMoves 的增量口径 ---------- */
+
+group('perfectMoves：落盘 -> 读档 -> 再结算', () => {
+  eq('首次结算按全额累加', A.matchedDelta(0, 7), 7);
+  eq('同一局重复结算为 0', A.matchedDelta(7, 7), 0);
+  eq('继续挑战只补新增部分', A.matchedDelta(7, 10), 3);
+  eq('脏数据不产生负数', A.matchedDelta(10, 4), 0);
+  eq('老存档缺字段按 0 处理', A.matchedDelta(undefined, 5), 5);
+
+  // 模拟控制器：档案与本局已入账标记一起落盘
+  let profile = A.emptyProfile();
+  let recorded = 0;
+  let matched = 7;
+
+  const firstDelta = A.matchedDelta(recorded, matched);
+  profile = A.addStats(profile, { perfectMoves: firstDelta });
+  recorded = matched;
+  eq('达成目标时记了 7 步', profile.stats.perfectMoves, 7);
+
+  // 落盘 -> 读档：档案过 normalizeProfile，标记原样读回
+  const saved = JSON.parse(JSON.stringify({ profile: profile, recorded: recorded }));
+  profile = A.normalizeProfile(saved.profile);
+  recorded = saved.recorded;
+  eq('读档后本局标记还在', recorded, 7);
+  eq('读档后 perfectMoves 还是 7', profile.stats.perfectMoves, 7);
+
+  // 继续挑战后再结算：matched 涨到 10，只补 3
+  matched = 10;
+  const secondDelta = A.matchedDelta(recorded, matched);
+  profile = A.addStats(profile, { perfectMoves: secondDelta });
+  recorded = matched;
+  eq('继续挑战只补 3 步', profile.stats.perfectMoves, 10);
+
+  // 刷新后拿同一份 matched 再结算一次：增量为 0，绝不能翻倍
+  const thirdDelta = A.matchedDelta(recorded, 10);
+  eq('重复结算的增量为 0', thirdDelta, 0);
+  eq('perfectMoves 没有翻倍',
+    A.addStats(profile, { perfectMoves: thirdDelta }).stats.perfectMoves, 10);
+});
+
 /* ---------- 查询小工具 ---------- */
 
 group('查询', () => {

@@ -397,6 +397,8 @@
       state.rngCount = 0;
       state.dailyRecorded = false;
       state.dailyRecordedMoves = 0;
+      // 跨日后这一局不再属于今日挑战，复盘入账标记一并归零
+      state.perfectRecorded = 0;
       resetReviewLog(null);   // 跨日后这一局不再属于今天的挑战，复盘也不该落盘
       setStatus('新的一天 · 今日挑战已刷新');
       saveState();
@@ -1049,10 +1051,10 @@
    * 同一天多打几局则各自实际累加，不做跨局去重。
    */
   function recordReviewAchievements(summary) {
-    if (!summary) return;
+    if (!summary || !Achievements) return;
 
     var matched = countOf(summary.matched);
-    var delta = matched - state.perfectRecorded;
+    var delta = Achievements.matchedDelta(state.perfectRecorded, matched);
     if (delta <= 0) return;
 
     state.perfectRecorded = matched;
@@ -1149,6 +1151,9 @@
       // 之后 recorded 归零，再结算一次就会把同一局的 games 再加一遍。
       recorded: state.recorded,
       recordedMoves: state.recordedMoves,
+      // 本局已计入 perfectMoves 的一致步数也必须跟着局面存：否则
+      // 「达成目标 → 继续挑战 → 关页 → 重开 → 再结算」会把同一局的 matched 再累加一遍。
+      perfectRecorded: state.perfectRecorded,
       // 每日身份与随机序列位置必须跟局面一起存：读档后接着长出来的方块
       // 才能和没关页面时完全一致；dailyRecorded 则保证一局只记一次成绩。
       daily: state.dailyKey,
@@ -1209,6 +1214,14 @@
     // 复盘日志跟局面一起存；日期以每日键为准，普通局不认这份日志
     var reviewLog = daily ? Review.normalizeLog(data.reviewLog, daily) : null;
 
+    // 本局已入账的一致步数。老存档没有这个字段时按 0 处理 —— 宁可少记，
+    // 也不能因为缺字段把整块棋盘丢掉；普通局不进复盘口径，恒为 0。
+    var perfectRecorded = 0;
+    if (daily) {
+      perfectRecorded = Math.max(0, Math.floor(Number(data.perfectRecorded) || 0));
+      if (perfectRecorded > moves) perfectRecorded = moves;
+    }
+
     return {
       size: size,
       mode: data.mode,
@@ -1225,6 +1238,7 @@
       rngCount: rngCount,
       dailyRecorded: dailyRecorded,
       dailyRecordedMoves: dailyRecordedMoves,
+      perfectRecorded: perfectRecorded,
       reviewLog: reviewLog
     };
   }
@@ -1311,6 +1325,8 @@
     state.rngCount = 0;
     state.dailyRecorded = false;
     state.dailyRecordedMoves = 0;
+    // 每次进入每日挑战都是新的一局：复盘一致步数的入账标记从头计
+    state.perfectRecorded = 0;
 
     settings.size = 4;
     settings.mode = 'classic';
@@ -2187,6 +2203,8 @@
             state.rngCount = saved.rngCount;
             state.dailyRecorded = saved.dailyRecorded;
             state.dailyRecordedMoves = saved.dailyRecordedMoves;
+            // 复盘入账标记跟着局面还原，刷新后同一局再结算不会重复累加 perfectMoves
+            state.perfectRecorded = saved.perfectRecorded;
             restoreDailyRng();
             // 复盘日志随局面存档：刷新前走了多少步，复盘就覆盖多少步；
             // 没算完的步重新排队补评分

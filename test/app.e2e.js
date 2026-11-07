@@ -686,8 +686,77 @@ async function main() {
     (await evalJs('document.activeElement && document.activeElement.id')) === 'achOpen',
     await evalJs('document.activeElement && document.activeElement.id'));
 
-  /* ---------- T10 控制台 ---------- */
-  console.log('\n[T10] 控制台');
+  /* ---------- T12 刷新后同一局不重复累加 perfectMoves ---------- */
+  console.log('\n[T12] 每日局刷新后再结算，perfectMoves 不翻倍');
+
+  const todayKey = await evalJs('Game2048Rng.dateKey(new Date())');
+  await evalJs(`(function () {
+    var key = ${JSON.stringify(todayKey)};
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'timed', sound: false });
+    Game2048Storage.set(Game2048Storage.KEYS.profile, {
+      version: 1, stats: { perfectMoves: 5 }, unlocked: {}
+    });
+    Game2048Storage.set(Game2048Storage.KEYS.state, {
+      version: 2, size: 4, mode: 'timed',
+      values: [[2, 2, 0, 0], [4, 8, 0, 0], [16, 32, 0, 0], [64, 128, 0, 0]],
+      score: 100, won: true, keepPlaying: true,
+      remainingMs: 3000, obstaclesAdded: 0, moves: 6,
+      recorded: true, recordedMoves: 2,
+      daily: key, rngCount: 0, dailyRecorded: true, dailyRecordedMoves: 2,
+      perfectRecorded: 5,
+      reviewLog: {
+        version: 1, date: key,
+        moves: [
+          { d: 'left', v: [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], g: 4, b: 'left', s: 10, t: 10 },
+          { d: 'up', v: [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], g: 4, b: 'left', s: 10, t: 8 }
+        ],
+        summary: null
+      }
+    });
+    return 1;
+  })()`);
+  await reload();
+
+  check('读档后仍是这一局每日局', (await text('#dailyStart')) === '重新开始',
+    await text('#dailyStart'));
+
+  const restoredProfile = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  check('读档没有把 perfectMoves 归零',
+    Boolean(restoredProfile) && restoredProfile.stats.perfectMoves === 5,
+    restoredProfile && String(restoredProfile.stats.perfectMoves));
+
+  // 再走一步触发 saveState，确认入账标记真的写进了存档
+  await press('ArrowLeft');
+  await wait(500);
+  const savedMid = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+  ));
+  check('存档里带上了 perfectRecorded',
+    Boolean(savedMid) && savedMid.perfectRecorded === 5,
+    JSON.stringify(savedMid && { perfectRecorded: savedMid.perfectRecorded, moves: savedMid.moves }));
+
+  // 加速时间跑到超时，触发同一局的第二次汇总
+  await evalJs(`(function () {
+    window.__realNow4 = Date.now.bind(Date);
+    var t0 = window.__realNow4();
+    Date.now = function () { return t0 + (window.__realNow4() - t0) * 300; };
+    return 1;
+  })()`);
+  await wait(1600);
+  await evalJs('Date.now = window.__realNow4, 1');
+  check('时间到正常结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+
+  const afterSecond = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  check('同一局再结算后 perfectMoves 仍是 5（没有翻倍）',
+    Boolean(afterSecond) && afterSecond.stats.perfectMoves === 5,
+    afterSecond && String(afterSecond.stats.perfectMoves));
+
+  /* ---------- T13 控制台 ---------- */
+  console.log('\n[T13] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

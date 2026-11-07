@@ -282,6 +282,24 @@
     }
   }
 
+  /**
+   * 复盘一致步数的增量口径：只算「本局还没入账的部分」。
+   *
+   * recorded 是同一局已经写进 perfectMoves 的数量（由控制器随存档落盘），
+   * matched 是本次汇总出来的一致步数。刷新恢复同一局后 recorded 原样读回，
+   * 所以再结算一次得到 0 —— 与 recordGame 的 recordedMoves 增量口径同构，
+   * 继续挑战时也只补新增的那几步。
+   *
+   * @param {number} recorded 本局已入账的一致步数
+   * @param {number} matched 本次汇总的一致步数
+   * @returns {number} 需要补记的数量（不会为负）
+   */
+  function matchedDelta(recorded, matched) {
+    var done = toCount(recorded);
+    var total = toCount(matched);
+    return total > done ? total - done : 0;
+  }
+
   /** 已解锁条数 */
   function countUnlocked(profile) {
     var data = profile && typeof profile === 'object' ? profile : {};
@@ -309,6 +327,7 @@
     progressOf: progressOf,
     evaluate: evaluate,
     addStats: addStats,
+    matchedDelta: matchedDelta,
     countUnlocked: countUnlocked,
     findById: findById
   };
