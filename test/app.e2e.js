@@ -240,6 +240,43 @@ async function main() {
     await reload();
   }
 
+  /**
+   * 在固定随机源下跑一段用例：Math.random 恒为 0，落子必为 2。
+   * try/finally 保证断言抛错也会还原，不把假随机留给后面的小节。
+   *
+   * @param {Function} fn 用例主体（async）
+   */
+  async function withFixedRandom(fn) {
+    await evalJs('window.__realRandomBackup = Math.random, Math.random = function () { return 0; }, 1');
+    try {
+      return await fn();
+    } finally {
+      await evalJs('Math.random = window.__realRandomBackup, delete window.__realRandomBackup, 1');
+    }
+  }
+
+  /**
+   * 在加速时钟下跑一段用例：Date.now 变成「基准 + 真实流逝 × 倍率」。
+   * 计时器只在这个窗口内被催快，窗口之外一律用真实时间。
+   *
+   * @param {Function} fn 用例主体（async）
+   * @param {number} [speed] 加速倍率，默认 300
+   */
+  async function withFakeClock(fn, speed) {
+    const rate = typeof speed === 'number' ? speed : 300;
+    await evalJs(`(function () {
+      window.__realNowBackup = Date.now.bind(Date);
+      var t0 = window.__realNowBackup();
+      Date.now = function () { return t0 + (window.__realNowBackup() - t0) * ${rate}; };
+      return 1;
+    })()`);
+    try {
+      return await fn();
+    } finally {
+      await evalJs('Date.now = window.__realNowBackup, delete window.__realNowBackup, 1');
+    }
+  }
+
   await wait(500);
 
   /* ---------- T1 动画期间连打，输入不丢 ---------- */
@@ -869,21 +906,29 @@ async function main() {
     [4, 8, 16, 32]
   ], 'classic');
 
-  await evalJs('window.__realRandom = Math.random, Math.random = function () { return 0; }, 1');
-  await press('ArrowLeft');
-  await wait(800);
-  await evalJs('Math.random = window.__realRandom, 1');
+  await withFixedRandom(async () => {
+    await press('ArrowLeft');
+    await wait(800);
+  });
 
   check('先弹出达成目标', (await text('#overlayTitle')) === '达成目标', await text('#overlayTitle'));
   check('这一步之后棋盘确实无解', (await boardHasMoves()) === false);
 
+  const statsBeforeContinue = await stats();
   await evalJs('document.querySelectorAll("#overlayActions button")[0].click(), 1');   // 继续挑战
   await wait(400);
+  const statsAfterContinue = await stats();
 
   // 旧实现：overlay 被 hideOverlay 关掉、over 复位后不再判死局，标题仍停在「达成目标」，
   // 棋盘按方向键毫无反应，也永远不会有第二次结算。
   check('继续挑战后立刻结算为死局', (await text('#overlayTitle')) === '走不动了', await text('#overlayTitle'));
   check('死局浮层是打开的', (await overlayHidden()) === false);
+  // 同一步的二次结算（win -> stuck）不能重复记局、重复计步：
+  // recordGame 的 firstTime / extraMoves 两个增量口径各锁一条。
+  check('二次结算不重复记局', statsAfterContinue.games === statsBeforeContinue.games,
+    statsBeforeContinue.games + ' -> ' + statsAfterContinue.games);
+  check('二次结算不重复计步', statsAfterContinue.totalMoves === statsBeforeContinue.totalMoves,
+    statsBeforeContinue.totalMoves + ' -> ' + statsAfterContinue.totalMoves);
   check('死局浮层带撤销入口', await evalJs(`(function () {
     var btns = document.querySelectorAll('#overlayActions button');
     for (var i = 0; i < btns.length; i++) {
@@ -909,14 +954,9 @@ async function main() {
   await wait(600);
   check('拖延的这一步没合出 2048', (await statusMoves()) === 1, '已走 ' + (await statusMoves()) + ' 步');
 
-  await evalJs(`(function () {
-    window.__realNowT15 = Date.now.bind(Date);
-    var t0 = window.__realNowT15();
-    Date.now = function () { return t0 + (window.__realNowT15() - t0) * 300; };
-    return 1;
-  })()`);
-  await wait(1600);
-  await evalJs('Date.now = window.__realNowT15, 1');
+  await withFakeClock(async () => {
+    await wait(1600);
+  });
   check('时间到先结算一次', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
 
   check('时间到浮层里点了撤销一步', (await evalJs(`(function () {
@@ -949,14 +989,9 @@ async function main() {
   await evalJs('document.querySelectorAll("#overlayActions button")[0].click(), 1');   // 继续挑战
   await wait(400);
 
-  await evalJs(`(function () {
-    window.__realNowT16 = Date.now.bind(Date);
-    var t0 = window.__realNowT16();
-    Date.now = function () { return t0 + (window.__realNowT16() - t0) * 300; };
-    return 1;
-  })()`);
-  await wait(1600);
-  await evalJs('Date.now = window.__realNowT16, 1');
+  await withFakeClock(async () => {
+    await wait(1600);
+  });
   check('同一局再结算一次', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
 
   // 没有 winRecorded 闸门时，第二次结算会再写一遍 wins / modeWins，这里会变成 +2。
