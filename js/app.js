@@ -10,7 +10,8 @@
  * 状态机的两个核心不变式：
  *   1. 一局只有一个 session 号。换局 / 撤销都会 +1，所有挂在异步回调上的旧逻辑
  *      先比对 session，不匹配就立刻退出，绝不改动新一局的状态。
- *   2. 动画在播（state.busy）时不接受新输入，避免连续走子把动画堆叠起来；
+ *   2. 动画在播（state.busy）时不再启动新的一步，避免连续走子把动画堆叠起来；
+ *      但玩家这期间的输入不丢：留一格 pendingDir，等这一步收尾时兑现。
  *      托管走同一条路径，所以托管也不会自己踩自己。
  */
 (function (global) {
@@ -137,12 +138,17 @@
     /** 本局已生成的障碍数，用于封顶 */
     obstaclesAdded: 0,
     history: [],
-    /** 动画播放中：期间不接受新输入 */
+    /** 动画播放中：期间不再启动新的一步 */
     busy: false,
     /** 一局的身份号，换局/撤销时自增，用来作废在途异步回调 */
     session: 0,
-    /** 本局是否已经计入统计，避免「赢了->撤销->又赢了」重复计数 */
-    recorded: false
+    /**
+     * 这一局是否已经入过账。注意它只表示「记过一次」，不表示「局已经结束」：
+     * 达成目标记一次后玩家还能点「继续挑战」接着玩，那时会按增量补记。
+     */
+    recorded: false,
+    /** 已经计入统计的步数；继续挑战后结算时只补记多出来的部分 */
+    recordedMoves: 0
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -152,10 +158,20 @@
   var autoplayTimer = null;  // 托管 / 提示用 setTimeout
   var autoplay = false;      // 托管开关（与定时器分开管理）
 
+  /** 动画期间缓冲的玩家方向：最多一格，只保留最后一次按键（不进撤销语义） */
+  var pendingDir = null;
+
   /* ---------- 小工具 ---------- */
 
+  /**
+   * 当前尺寸的目标值。
+   *
+   * 刻意不用 G.WIN_VALUE 兜底：它恒为 2048，只对 4×4 成立，
+   * 兜底会把「GOAL_BY_SIZE 缺键」这种配置错误静默变成错误的胜负判定。
+   * 宁可让 undefined 直接暴露到界面上，也不让错误悄悄通过。
+   */
   function goalValue() {
-    return G.GOAL_BY_SIZE[settings.size] || G.WIN_VALUE;
+    return G.GOAL_BY_SIZE[settings.size];
   }
 
   function maxObstacles() {
@@ -384,6 +400,8 @@
     state.busy = false;
     state.moves = 0;
     state.recorded = false;
+    state.recordedMoves = 0;
+    pendingDir = null;
     state.remainingMs = MODES[settings.mode].timeLimitMs;
     state.obstaclesAdded = MODES[settings.mode].obstacles;
 
@@ -417,6 +435,7 @@
 
     state.over = true;
     state.busy = false;
+    pendingDir = null;   // 结算了就不再兑现缓冲，免得留到下一局去
 
     stopCountdown();
     disableAutoplay();
@@ -437,36 +456,57 @@
     saveState();   // over 状态下等价于移除存档
   }
 
-  /** 每局结束累加统计；同一局只记一次 */
+  /**
+   * 结算入账。
+   *
+   * 一局可能入账两次：「达成目标」先记一次，玩家点「继续挑战」再玩到死局/超时又是一次。
+   * 所以这里按「增量」补记，而不是靠一个终身有效的布尔一刀切：
+   *   - games / bySize[size].games 只加一次（一局就是一局）；
+   *   - totalMoves 加上次入账之后新增的步数；
+   *   - bestScore / bestTile 取 max。
+   * 这样继续挑战期间的分数与步数都不会丢，刷新后「最高」也不会倒退。
+   */
   function recordGame() {
-    if (state.recorded) return;
-    state.recorded = true;
+    var firstTime = !state.recorded;
+    var extraMoves = Math.max(0, state.moves - state.recordedMoves);
+    if (!firstTime && extraMoves === 0) return;   // 继续挑战期间没有新进展，不必写盘
 
     stats = Storage.loadStats();
-    stats.games += 1;
-    stats.totalMoves += state.moves;
+
+    if (firstTime) {
+      stats.games += 1;
+      var key = String(settings.size);
+      var bucket = stats.bySize[key];
+      if (!bucket) bucket = { games: 0, bestScore: 0 };
+      bucket.games += 1;
+      stats.bySize[key] = bucket;
+      state.recorded = true;
+    }
+
+    stats.totalMoves += extraMoves;
+    state.recordedMoves += extraMoves;
 
     var tile = G.maxValue(state.board);
     if (state.score > stats.bestScore) stats.bestScore = state.score;
     if (tile > stats.bestTile) stats.bestTile = tile;
 
-    var key = String(settings.size);
-    var bucket = stats.bySize[key];
-    if (!bucket) bucket = { games: 0, bestScore: 0 };
-    bucket.games += 1;
-    if (state.score > bucket.bestScore) bucket.bestScore = state.score;
-    stats.bySize[key] = bucket;
+    var sizeBucket = stats.bySize[String(settings.size)];
+    if (sizeBucket && state.score > sizeBucket.bestScore) sizeBucket.bestScore = state.score;
 
     Storage.saveStats(stats);
   }
 
   /* ---------- 走一步 ---------- */
 
+  /**
+   * 走一步（真正落子的唯一入口）。
+   * @returns {boolean} 是否真的走了一步；被锁、或这个方向推不动都返回 false
+   */
   function applyMove(dir) {
-    if (isLocked()) return;
+    if (isLocked()) return false;
 
     var result = G.computeMove(state.board, dir);
-    if (!result.changed) return;   // 这个方向推不动，不消耗步数、不留快照
+    if (!result.changed) return false;   // 这个方向推不动，不消耗步数、不留快照
 
     var session = state.session;
 
@@ -496,6 +536,8 @@
         }
         finishTurn();
       });
+
+    return true;
   }
 
   function playMoveSound(result) {
@@ -507,6 +549,46 @@
     // 一次移动里只发一个音：取最大合并值，避免多重合奏糊成一片
     if (best) Audio.merge(best);
     else Audio.move();
+  }
+
+  /* ---------- 玩家输入入口 ---------- */
+
+  /**
+   * 玩家的一次走子意图（键盘与滑动都走这里）。
+   *
+   * 动画在播时不能立刻落子，但也不能把意图丢掉——只留最后一格，
+   * 等这一步收尾时由 flushPendingDir() 兑现。
+   *
+   * @returns {boolean} 是否立刻走了一步
+   */
+  function queueMove(dir) {
+    if (state.over || !els.overlay.hidden) return false;   // 已结算 / 浮层挡着：不接受也不缓冲
+
+    if (state.busy) {
+      pendingDir = dir;
+      return false;
+    }
+
+    var moved = applyMove(dir);
+    if (moved) disableAutoplay();   // 只有真的走了一步才算从 AI 手里接管
+    return moved;
+  }
+
+  /**
+   * 兑现动画期间缓冲的方向（一步收尾时调一次）。
+   * 方向推不动就不关托管——玩家的这一下本来就无效，不该顺手把 AI 停掉。
+   *
+   * @returns {boolean} 是否真的又走了一步
+   */
+  function flushPendingDir() {
+    if (!pendingDir) return false;
+
+    var dir = pendingDir;
+    pendingDir = null;
+    if (!applyMove(dir)) return false;
+
+    disableAutoplay();
+    return true;
   }
 
   /** 动画播完之后的收尾：长障碍、判胜负、决定是否继续托管 */
@@ -536,6 +618,10 @@
     setStatus(
       '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步'
     );
+
+    // 这一步刚好收尾，把动画期间缓冲的方向兑现掉；兑现成功就不再排托管
+    if (flushPendingDir()) return;
+
     scheduleAutoplay(AUTOPLAY_DELAY_MS);
   }
 
@@ -566,6 +652,7 @@
     stopCountdown();
     state.session += 1;   // 作废在途动画回调
     state.busy = false;
+    pendingDir = null;    // 缓冲的是「撤销前那一手之后」的意图，跟着一起作废
 
     state.board = G.boardFromValues(snapshot.values);
     state.score = snapshot.score;
@@ -799,8 +886,7 @@
     if (!dir) return;
 
     event.preventDefault();
-    disableAutoplay();   // 手动接管即关闭托管
-    applyMove(dir);
+    queueMove(dir);   // 手动接管即关闭托管；动画期间按下的一律先进 1 格缓冲
   }
 
   var pointerStart = null;
@@ -819,11 +905,10 @@
 
     if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return;
 
-    disableAutoplay();
     if (Math.abs(dx) > Math.abs(dy)) {
-      applyMove(dx > 0 ? 'right' : 'left');
+      queueMove(dx > 0 ? 'right' : 'left');
     } else {
-      applyMove(dy > 0 ? 'down' : 'up');
+      queueMove(dy > 0 ? 'down' : 'up');
     }
   }
 
