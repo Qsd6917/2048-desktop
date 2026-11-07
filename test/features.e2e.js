@@ -293,6 +293,21 @@ async function main() {
     return total;
   })()`);
 
+  /**
+   * 轮询等粒子落笔。合并特效排在滑行动画之后（约 110ms），慢机上首帧可能更晚；
+   * 单点采样一旦踩空就会假红，这里给约 1s 的预算。
+   */
+  async function waitForPixels(budgetMs) {
+    const deadline = Date.now() + budgetMs;
+    let pixels = 0;
+    while (Date.now() < deadline) {
+      pixels = await fxPixels();
+      if (pixels > 0) return pixels;
+      await wait(60);
+    }
+    return pixels;
+  }
+
   await wait(500);
 
   /* ---------- T1 同一天两次开局完全一致 ---------- */
@@ -320,38 +335,78 @@ async function main() {
   /* ---------- T2 走 3 步后刷新续玩 ---------- */
   console.log('\n[T2] 刷新续玩：分数 / 步数 / 盘面 / 每日条 / 复盘日志');
 
+  // 独立起一局每日，注入一份已知盘面 + 非 0 分数：
+  // 3 步可能一步都没合并，0 → 0 的分数断言等于没测。
+  await wipe();
+  await click('#dailyChallenge');
+  await wait(400);
+  const t2Key = await evalJs('Game2048Rng.dateKey(new Date())');
+  await inject({ daily: t2Key, values: BOARD_RIGHT_COL, score: 120 });
+
   await playMoves(3);
   const beforeMoves = await stateMoves();
-  const beforeScore = await text('#score');
+  const beforeScore = Number((await text('#score')).replace(/,/g, ''));
   const beforeSig = await sig();
-  const beforeMeta = await text('#dailyMeta');
   const beforeState = await savedState();
   const beforeLog = beforeState && beforeState.reviewLog
     ? beforeState.reviewLog.moves.length
     : -1;
 
   check('确实走了 3 步', beforeMoves === 3, String(beforeMoves));
+  check('刷新前的分数不为 0（恢复断言才有区分力）', beforeScore > 0, String(beforeScore));
   check('复盘日志与步数一致', beforeLog === beforeMoves, beforeLog + ' / ' + beforeMoves);
 
   await reload();
+
+  check('刷新后分数恢复到刷新前',
+    Number((await text('#score')).replace(/,/g, '')) === beforeScore,
+    beforeScore + ' -> ' + (await text('#score')));
+  check('刷新后盘面完全一致', (await sig()) === beforeSig);
+  check('刷新后每日条仍是「第 1 次」', /第 1 次/.test(await text('#dailyMeta')),
+    await text('#dailyMeta'));
+  check('刷新后每日条按钮变成「重新开始」', (await text('#dailyStart')) === '重新开始',
+    await text('#dailyStart'));
+
+  // 复盘面板只能从恢复出来的日志渲染：日志没续上就会退回空状态。
+  // 这一步必须在「再走一步」之前看，否则新的一步也会让面板变成非空。
+  await click('#reviewOpen');
+  await wait(260);
+  // 空状态里没有 .metric：取不到就返回 null，让断言报红而不是整个套件抛异常
+  const reviewScore = await evalJs(`(function () {
+    var el = document.querySelector('#reviewBody .metric .metric__value');
+    return el ? el.textContent.replace(/,/g, '') : null;
+  })()`);
+  check('刷新后复盘面板续上了这一局（不是空状态）',
+    (await evalJs('document.querySelectorAll("#reviewBody .review-empty").length')) === 0 &&
+      (await evalJs('document.querySelectorAll("#reviewBody .metrics").length')) === 1);
+  check('复盘面板的分数与刷新前一致', reviewScore === String(beforeScore),
+    reviewScore + ' vs ' + beforeScore);
+
+  await press('Escape');
+  await wait(200);
+  check('Esc 关闭复盘', (await hidden('#reviewSheet')) === true);
+
+  // 再走一步：应用会重新落盘，此时读到的步数只能是 3 -> 4。
+  // 若 readSaved 把 moves 丢了，这里会从 1 开始数，断言就会红。
+  const dirs = ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'];
+  let afterMoves = beforeMoves;
+  for (let i = 0; i < dirs.length && afterMoves === beforeMoves; i++) {
+    await press(dirs[i]);
+    await wait(500);
+    afterMoves = await stateMoves();
+  }
+
+  check('刷新后再走一步，步数从 3 接着数到 4', afterMoves === 4,
+    beforeMoves + ' -> ' + afterMoves);
 
   const afterState = await savedState();
   const afterLog = afterState && afterState.reviewLog
     ? afterState.reviewLog.moves.length
     : -1;
 
-  check('刷新后分数不变', (await text('#score')) === beforeScore,
-    beforeScore + ' -> ' + (await text('#score')));
-  check('刷新后步数不变', afterState && afterState.moves === beforeMoves,
-    beforeMoves + ' -> ' + (afterState && afterState.moves));
-  check('刷新后盘面完全一致', (await sig()) === beforeSig);
-  check('刷新后每日条仍是「第 1 次」', /第 1 次/.test(await text('#dailyMeta')),
-    await text('#dailyMeta'));
-  check('刷新后每日条按钮变成「重新开始」', (await text('#dailyStart')) === '重新开始',
-    await text('#dailyStart'));
-  check('刷新后复盘日志步数不变', afterLog === beforeLog, beforeLog + ' -> ' + afterLog);
+  check('刷新后复盘日志从 3 步接着记到 4 步', afterLog === 4, beforeLog + ' -> ' + afterLog);
   check('刷新后复盘日志仍属于今天',
-    Boolean(afterState) && afterState.daily === (await evalJs('Game2048Rng.dateKey(new Date())')),
+    Boolean(afterState) && afterState.daily === t2Key,
     afterState && afterState.daily);
 
   /* ---------- T3 成就面板 ---------- */
@@ -439,9 +494,8 @@ async function main() {
   const mergesBefore = (await savedProfile()).stats.merges;
 
   await press('ArrowLeft');
-  await wait(200);                 // 合并特效排在滑行 110ms 之后
-  const pixelCount = await fxPixels();
-  await wait(450);
+  const pixelCount = await waitForPixels(1000);
+  await wait(300);
 
   const smokeState = await savedState();
   const smokeProfile = await savedProfile();
@@ -462,8 +516,12 @@ async function main() {
   await wipe();
   await evalJs(`(function () {
     Game2048Storage.set(Game2048Storage.KEYS.stats, {
-      games: 12, bestScore: 32000, bestTile: 2048, totalMoves: 900,
-      bySize: { '4': { games: 11, bestScore: 32000 }, '6': { games: 1, bestScore: 0 } }
+      games: 14, bestScore: 32000, bestTile: 2048, totalMoves: 900,
+      bySize: {
+        '4': { games: 11, bestScore: 32000 },   // 打过大分
+        '5': { games: 3, bestScore: 0 },        // 打完但一分没拿，也要算玩过
+        '6': { games: 0, bestScore: 0 }         // 只有空档，没真打过
+      }
     });
     Game2048Storage.remove(Game2048Storage.KEYS.profile);
     return 1;
@@ -477,8 +535,11 @@ async function main() {
     seeded && String(seeded.stats.bestScore));
   check('档案已按历史最大块播种', Boolean(seeded) && seeded.stats.bestTile === 2048,
     seeded && String(seeded.stats.bestTile));
-  check('只播下真正得过分数的尺寸',
-    Boolean(seeded) && seeded.stats.sizes['4'] === 1 && seeded.stats.sizes['6'] === undefined,
+  check('玩过的尺寸都播种（0 分收场的局也算）',
+    Boolean(seeded) && seeded.stats.sizes['4'] === 1 && seeded.stats.sizes['5'] === 1,
+    JSON.stringify(seeded && seeded.stats.sizes));
+  check('没打过的尺寸不播种',
+    Boolean(seeded) && seeded.stats.sizes['6'] === undefined,
     JSON.stringify(seeded && seeded.stats.sizes));
   check('两万分当场解锁', seededIds.indexOf('score_20k') >= 0, seededIds.join(','));
   check('2048 相关成就当场解锁',
@@ -544,6 +605,14 @@ async function main() {
   });
   await wait(400);
 
+  // 每日条默认 hidden：元素不参与布局时 rect 全是 0，
+  // 不断言它可见，下面的「不溢出 / 不重叠」就是恒真的空断言。
+  await click('#dailyChallenge');
+  await wait(500);
+
+  const barVisible = (await evalJs('document.getElementById("dailyBar").hidden')) === false;
+  check('320px 下每日条真的可见（几何断言才有意义）', barVisible);
+
   const narrow = JSON.parse(await evalJs(`(function () {
     function box(el) {
       var r = el.getBoundingClientRect();
@@ -570,10 +639,20 @@ async function main() {
     var board = box(document.getElementById('board'));
     return JSON.stringify({
       app: app, rows: rows, daily: daily, kids: kids, board: board,
+      dailyHidden: document.getElementById('dailyBar').hidden,
       docWidth: document.documentElement.scrollWidth,
       viewWidth: window.innerWidth
     });
   })()`));
+
+  check('窄屏探测取到了两排按钮与三段每日条',
+    narrow.rows.length === 2 && narrow.rows[0].length === 5 &&
+      narrow.rows[1].length === 3 && narrow.kids.length === 3,
+    narrow.rows.map((row) => row.length).join('/') + ' · kids=' + narrow.kids.length);
+  check('窄屏探测时每日条仍可见（不是靠 hidden 蒙混）',
+    narrow.dailyHidden === false && narrow.daily.right > narrow.daily.left + 100 &&
+      narrow.daily.width > 0,
+    'hidden=' + narrow.dailyHidden + ' w=' + narrow.daily.width);
 
   const clipped = [];
   narrow.rows.forEach((row) => {
