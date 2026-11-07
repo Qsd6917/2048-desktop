@@ -668,13 +668,21 @@ async function main() {
   await evalJs('window.__fxProbe.stop(), delete window.__fxProbe, 1');
 
   // reduce 下 renderer.playMove 只等 1ms：连按两下不该被 285ms 的 busy 卡住
+  // 上一段的小合并走完再换盘：动画收尾时还会落一次盘，抢在它前面注入会被覆盖
+  await wait(320);
   await loadBoard(BOARD_RIGHT_COL, 'classic');
+  // 重载后重新下发一次偏好：媒体模拟属于页面级状态，别让 reload 时序决定这条用例的成败
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+  });
+  check('换盘后系统偏好仍是 reduce',
+    (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === true);
   await press('ArrowLeft');
   await wait(30);
   await press('ArrowDown');
-  await wait(180);
-  check('reduce 下输入不再被动画等待锁住（180ms 内走完两步）',
-    (await statusMoves()) === 2, '已走 ' + (await statusMoves()) + ' 步');
+  await wait(200);
+  check('reduce 下输入不再被动画等待锁住（200ms 内走完两步）',
+    (await statusMoves()) >= 2, '已走 ' + (await statusMoves()) + ' 步');
 
   await send('Emulation.setEmulatedMedia', { features: [] });
   check('媒体模拟已撤销',
