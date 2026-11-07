@@ -1557,6 +1557,32 @@ async function main() {
     await text('#turnLabel'));
 
   // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
+  // 死局：一步左移把唯一的空格补满，盘面变成无合并的棋盘，按比分判胜负
+  const BOARD_DUEL_STUCK = [
+    [2, 4, 2, 4],
+    [4, 2, 4, 2],
+    [2, 4, 2, 4],
+    [0, 4, 2, 4]
+  ];
+
+  await loadBoard(BOARD_DUEL_STUCK, 'duel', { players: [8, 4], turn: 0, score: 12 });
+  await withFixedRandom(async () => {
+    await press('ArrowLeft');
+    await wait(900);
+  });
+  check('双人死局按比分判玩家 1 获胜', (await text('#overlayTitle')) === '玩家 1 获胜',
+    await text('#overlayTitle'));
+  check('死局文案带两人比分', /玩家 1 8 分 \/ 玩家 2 4 分/.test((await text('#overlayText')) || ''),
+    await text('#overlayText'));
+
+  await loadBoard(BOARD_DUEL_STUCK, 'duel', { players: [6, 6], turn: 0, score: 12 });
+  await withFixedRandom(async () => {
+    await press('ArrowLeft');
+    await wait(900);
+  });
+  check('双人死局同分判平局', (await text('#overlayTitle')) === '平局', await text('#overlayTitle'));
+
+  // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
   const statsBeforeDuelWin = await stats();
   await loadBoard([
     [1024, 1024, 0, 0],
