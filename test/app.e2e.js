@@ -475,8 +475,294 @@ async function main() {
   check('00:00 保留 is-urgent 紧急样式', clockText === '00:00' && clockUrgent === true,
     clockText + ' / urgent=' + clockUrgent);
 
-  /* ---------- T9 控制台 ---------- */
-  console.log('\n[T9] 控制台');
+  /* ---------- T9 全屏粒子层的运行时行为 ---------- */
+  console.log('\n[T9] 全屏粒子层');
+
+  const fxRect = JSON.parse(await evalJs(`(function () {
+    var r = document.getElementById('fx').getBoundingClientRect();
+    return JSON.stringify({
+      w: r.width, h: r.height,
+      iw: window.innerWidth, ih: window.innerHeight,
+      pe: getComputedStyle(document.getElementById('fx')).pointerEvents
+    });
+  })()`));
+  check('#fx 铺满视口', Math.abs(fxRect.w - fxRect.iw) <= 1 && Math.abs(fxRect.h - fxRect.ih) <= 1,
+    fxRect.w + '×' + fxRect.h + ' / 视口 ' + fxRect.iw + '×' + fxRect.ih);
+  check('#fx 不吃指针事件', fxRect.pe === 'none', fxRect.pe);
+
+  // 自建一个离屏实例单独测上限/可见性，不动正式粒子层
+  await evalJs(`window.__fxProbe = Game2048Fx.create({ canvas: document.createElement('canvas') }), 1`);
+
+  const capStats = JSON.parse(await evalJs(`(function () {
+    var burst = [];
+    for (var i = 0; i < 40; i++) {
+      burst = burst.concat(Game2048Fx.planBurst({ value: 2048, combo: 9, x: 100, y: 100 }));
+    }
+    // 6 批 × 46 个 ≈ 2700，远超 900 的上限
+    for (var k = 0; k < 6; k++) window.__fxProbe.burst(burst);
+    return JSON.stringify(window.__fxProbe.stats());
+  })()`));
+  check('粒子池上限 900（超出丢最旧）', capStats.particles === 900, 'particles=' + capStats.particles);
+
+  const runningAtFirst = await evalJs(`(function () {
+    window.__fxProbe.burst(Game2048Fx.planBurst({ value: 8, x: 10, y: 10 }));
+    return window.__fxProbe.stats().running;
+  })()`);
+  check('有粒子时 rAF 在跑', runningAtFirst === true);
+
+  // 伪造 hidden：直接改写 document.hidden 再派发真实事件，走的是与浏览器同一条处理路径
+  await evalJs(`(function () {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: function () { return true; }
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+    return 1;
+  })()`);
+  check('页面 hidden 后 rAF 停下', (await evalJs('window.__fxProbe.stats().running')) === false);
+
+  await evalJs(`(function () {
+    delete document.hidden;
+    document.dispatchEvent(new Event('visibilitychange'));
+    return 1;
+  })()`);
+  check('回到前台后 rAF 继续', (await evalJs('window.__fxProbe.stats().running')) === true);
+  await evalJs('window.__fxProbe.stop(), 1');
+  const stopped = JSON.parse(await evalJs('JSON.stringify(window.__fxProbe.stats())'));
+  check('stop 之后循环与粒子都清空',
+    stopped.particles === 0 && stopped.rings === 0 && stopped.sweeps === 0 && stopped.running === false,
+    JSON.stringify(stopped));
+
+  // 真实合并走一遍映射表第 2 行：≥256 要有环 + 震屏，音频要带 accent
+  await loadBoard([
+    [128, 128, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'classic');
+
+  /** 装上音阶探针：只记录调用参数，不关心是否真的发声 */
+  const installTuningSpy = `(function () {
+    window.__tuningCalls = [];
+    var real = Game2048Tuning.mergeNotes;
+    Game2048Tuning.mergeNotes = function (values, combo, opts) {
+      window.__tuningCalls.push({
+        values: values.slice(),
+        combo: combo,
+        accent: !!(opts && opts.accent === true)
+      });
+      return real(values, combo, opts);
+    };
+    Game2048Audio.setEnabled(true);   // loadBoard 为了安静把音效关了
+    return 1;
+  })()`;
+
+  await evalJs(installTuningSpy);
+  await press('ArrowLeft');
+  await wait(150);
+  check('合出 256', (await evalJs(SIG)).indexOf('=256') >= 0, await evalJs(SIG));
+  check('≥256 触发震屏',
+    (await evalJs('document.getElementById("app").classList.contains("is-shaking")')) === true);
+
+  const calls256 = JSON.parse(await evalJs('JSON.stringify(window.__tuningCalls || [])'));
+  check('≥256 的合并把 accent 传给了音阶层',
+    calls256.length === 1 && calls256[0].accent === true && calls256[0].values.indexOf(256) >= 0,
+    JSON.stringify(calls256));
+
+  await wait(460);
+  check('震屏自动收掉',
+    (await evalJs('document.getElementById("app").classList.contains("is-shaking")')) === false);
+
+  // 小合并不该带 accent
+  await loadBoard([
+    [2, 2, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  ], 'classic');
+  await evalJs(installTuningSpy);
+  await press('ArrowLeft');
+  await wait(150);
+  const callsSmall = JSON.parse(await evalJs('JSON.stringify(window.__tuningCalls || [])'));
+  check('小于 256 的合并不带 accent',
+    callsSmall.length === 1 && callsSmall[0].accent === false,
+    JSON.stringify(callsSmall));
+
+  // 强制「减少动态效果」：与 app.js 一样按 matchMedia 建实例，再触发 burst
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+  });
+  check('系统偏好已强制为 reduce',
+    (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === true);
+
+  const reducedStats = JSON.parse(await evalJs(`(function () {
+    window.__fxProbe = Game2048Fx.create({
+      canvas: document.createElement('canvas'),
+      reduceMotion: matchMedia('(prefers-reduced-motion: reduce)').matches
+    });
+    window.__fxProbe.burst(Game2048Fx.planBurst({ value: 2048, combo: 9, x: 10, y: 10 }));
+    window.__fxProbe.confetti(120);
+    window.__fxProbe.dust(40);
+    window.__fxProbe.ring(10, 10, 256);
+    window.__fxProbe.sweep();
+    return JSON.stringify(window.__fxProbe.stats());
+  })()`));
+  check('reduce 下粒子/环/扫光恒为 0',
+    reducedStats.particles + reducedStats.rings + reducedStats.sweeps === 0,
+    JSON.stringify(reducedStats));
+  check('reduce 下 rAF 不启动', reducedStats.running === false);
+  await evalJs('window.__fxProbe.stop(), delete window.__fxProbe, 1');
+
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  check('媒体模拟已撤销',
+    (await evalJs('matchMedia("(prefers-reduced-motion: reduce)").matches')) === false);
+
+  /* ---------- T11 成就系统 ---------- */
+  console.log('\n[T11] 成就：计数、面板与提示条');
+
+  // 档案与历史战绩一起清空：现在新档案会用 stats 播种，
+  // 只删档案会按历史最高分补出一批已解锁成就，测不到「全新玩家」这一档。
+  await evalJs(`(function () {
+    Game2048Storage.remove(Game2048Storage.KEYS.profile);
+    Game2048Storage.remove(Game2048Storage.KEYS.stats);
+    return 1;
+  })()`);
+  await reload();
+  check('清空档案后首次进入是 0/25', (await text('#achOpen')) === '成就 0/25',
+    await text('#achOpen'));
+
+  await loadBoard(BOARD_WIN_IN_ONE, 'timed');
+  await press('ArrowLeft');
+  await wait(700);
+
+  const achProfile = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  const unlockedIds = achProfile ? Object.keys(achProfile.unlocked) : [];
+  check('成就档案已落盘', Boolean(achProfile) && achProfile.version === 1,
+    JSON.stringify(achProfile && achProfile.stats));
+  check('一局后 games 记了 1', Boolean(achProfile) && achProfile.stats.games === 1,
+    achProfile && String(achProfile.stats.games));
+  check('达成目标解锁 first_game', unlockedIds.indexOf('first_game') >= 0, unlockedIds.join(','));
+  check('2048 解锁 tile_2048', unlockedIds.indexOf('tile_2048') >= 0, unlockedIds.join(','));
+  check('解锁时间戳是正整数',
+    Boolean(achProfile) && typeof achProfile.unlocked.first_game === 'number' &&
+      achProfile.unlocked.first_game > 0,
+    achProfile && String(achProfile.unlocked.first_game));
+
+  const achLabel = await text('#achOpen');
+  const achMatch = /^成就 (\d+)\/25$/.exec(achLabel || '');
+  check('成就按钮显示 x/25 且与档案一致',
+    Boolean(achMatch) && Number(achMatch[1]) === unlockedIds.length,
+    achLabel + ' / unlocked=' + unlockedIds.length);
+
+  const toastCount = await evalJs('document.querySelectorAll("#achToasts .toast").length');
+  check('解锁时右下角出现提示条', toastCount >= 1, 'toasts=' + toastCount);
+  check('提示条同屏最多 3 条', toastCount <= 3, 'toasts=' + toastCount);
+
+  await evalJs('document.getElementById("achOpen").focus(), 1');
+  await click('#achOpen');
+  await wait(180);
+  check('成就面板打开', (await evalJs('document.getElementById("achSheet").hidden')) === false);
+  check('面板里 25 张卡片',
+    (await evalJs('document.querySelectorAll("#achBody .ach-card").length')) === 25);
+
+  const unlockedCards = await evalJs('document.querySelectorAll("#achBody .ach-card.is-unlocked").length');
+  check('解锁卡片数与档案一致', unlockedCards === unlockedIds.length,
+    unlockedCards + ' vs ' + unlockedIds.length);
+
+  check('锁定卡片 aria-disabled 且仍可聚焦', await evalJs(`(function () {
+    var card = document.querySelector('#achBody .ach-card[aria-disabled="true"]');
+    return !!card && card.getAttribute('tabindex') === '0';
+  })()`));
+  check('锁定卡片带进度条', (await evalJs(
+    'document.querySelectorAll("#achBody .ach-card[aria-disabled=\\"true\\"] .ach-progress").length'
+  )) > 0);
+  check('解锁卡片显示解锁日期',
+    /^解锁于 \d{4}-\d{2}-\d{2}$/.test((await text('#achBody .ach-card.is-unlocked .ach-card__date')) || ''),
+    await text('#achBody .ach-card.is-unlocked .ach-card__date'));
+  check('顶部显示已解锁汇总',
+    ((await text('#achBody .ach-summary__count')) || '').indexOf('已解锁 ' + unlockedIds.length + ' / 25') === 0,
+    await text('#achBody .ach-summary__count'));
+
+  await press('Escape');
+  await wait(150);
+  check('Esc 关闭成就面板', (await evalJs('document.getElementById("achSheet").hidden')) === true);
+  check('关闭后焦点回到成就入口',
+    (await evalJs('document.activeElement && document.activeElement.id')) === 'achOpen',
+    await evalJs('document.activeElement && document.activeElement.id'));
+
+  /* ---------- T12 刷新后同一局不重复累加 perfectMoves ---------- */
+  console.log('\n[T12] 每日局刷新后再结算，perfectMoves 不翻倍');
+
+  const todayKey = await evalJs('Game2048Rng.dateKey(new Date())');
+  await evalJs(`(function () {
+    var key = ${JSON.stringify(todayKey)};
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'timed', sound: false });
+    Game2048Storage.set(Game2048Storage.KEYS.profile, {
+      version: 1, stats: { perfectMoves: 5 }, unlocked: {}
+    });
+    Game2048Storage.set(Game2048Storage.KEYS.state, {
+      version: 2, size: 4, mode: 'timed',
+      values: [[2, 2, 0, 0], [4, 8, 0, 0], [16, 32, 0, 0], [64, 128, 0, 0]],
+      score: 100, won: true, keepPlaying: true,
+      remainingMs: 3000, obstaclesAdded: 0, moves: 6,
+      recorded: true, recordedMoves: 2,
+      daily: key, rngCount: 0, dailyRecorded: true, dailyRecordedMoves: 2,
+      perfectRecorded: 5,
+      reviewLog: {
+        version: 1, date: key,
+        moves: [
+          { d: 'left', v: [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], g: 4, b: 'left', s: 10, t: 10 },
+          { d: 'up', v: [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], g: 4, b: 'left', s: 10, t: 8 }
+        ],
+        summary: null
+      }
+    });
+    return 1;
+  })()`);
+  await reload();
+
+  check('读档后仍是这一局每日局', (await text('#dailyStart')) === '重新开始',
+    await text('#dailyStart'));
+
+  const restoredProfile = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  check('读档没有把 perfectMoves 归零',
+    Boolean(restoredProfile) && restoredProfile.stats.perfectMoves === 5,
+    restoredProfile && String(restoredProfile.stats.perfectMoves));
+
+  // 再走一步触发 saveState，确认入账标记真的写进了存档
+  await press('ArrowLeft');
+  await wait(500);
+  const savedMid = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+  ));
+  check('存档里带上了 perfectRecorded',
+    Boolean(savedMid) && savedMid.perfectRecorded === 5,
+    JSON.stringify(savedMid && { perfectRecorded: savedMid.perfectRecorded, moves: savedMid.moves }));
+
+  // 加速时间跑到超时，触发同一局的第二次汇总
+  await evalJs(`(function () {
+    window.__realNow4 = Date.now.bind(Date);
+    var t0 = window.__realNow4();
+    Date.now = function () { return t0 + (window.__realNow4() - t0) * 300; };
+    return 1;
+  })()`);
+  await wait(1600);
+  await evalJs('Date.now = window.__realNow4, 1');
+  check('时间到正常结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+
+  const afterSecond = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.profile, null))'
+  ));
+  check('同一局再结算后 perfectMoves 仍是 5（没有翻倍）',
+    Boolean(afterSecond) && afterSecond.stats.perfectMoves === 5,
+    afterSecond && String(afterSecond.stats.perfectMoves));
+
+  /* ---------- T13 控制台 ---------- */
+  console.log('\n[T13] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

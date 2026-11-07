@@ -69,12 +69,22 @@ body {
  * 竖直方向的尺寸分配：
  *   1. 宽度同时受「视口宽」和「视口高」约束 —— 棋盘是正方形，宽高必须一起让，
  *      否则高窗口里棋盘永远只有 452px、下面留一大截空白（问题 5）。
- *      减掉的 330px 是标题、HUD、控制条、设置面板与页脚的固定开销。
+ *      减掉的 432px 是标题、HUD、每日条、两排控制条、设置面板与页脚的固定开销。
+ *      这个数是实测出来的：1280×800 下取 396px 时页脚底边 818 > 视口 800
+ *      （整页 scrollHeight 836），按每 1px 棋盘高度折算 1px 页面高度，
+ *      补足 36px 后页脚底边 782、scrollHeight 800，正好不溢出。
+ *      改这一条必须同步跑 test/features.e2e.js 的 T9 实测断言，不要凭公式猜。
  *   2. margin-block: auto 让整块内容在多余空间里居中；空间不够时 auto 自动归零，
  *      内容从顶部开始排、页面正常滚动，不会被"居中"裁掉上边缘。
  */
 .app {
-  width: min(100%, 500px, max(280px, calc(100dvh - 330px)));
+  /*
+   * 粒子层是 fixed 的 40 层，这里把应用抬到 1 层并建立自己的层叠上下文：
+   * 棋盘、浮层、按钮都留在粒子之下，但粒子本身 pointer-events:none，交互不受影响。
+   */
+  position: relative;
+  z-index: 1;
+  width: min(100%, 500px, max(280px, calc(100dvh - 432px)));
   margin-block: auto;
   display: flex;
   flex-direction: column;
@@ -401,6 +411,62 @@ body {
   }
 }
 
+/* ---------- 每日挑战条 ---------- */
+
+/*
+ * 一行三段：日期 / 战绩说明 / 开始按钮。
+ * 和设置面板同一套纸感（半透明底 + 细边），高度压到 34px，
+ * 因为它是常驻信息条，不能比 HUD 更抢眼。
+ */
+.daily-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin-bottom: 9px;
+  padding: 0 10px;
+  background: rgba(94, 76, 58, 0.055);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.daily-bar[hidden] {
+  display: none;
+}
+
+.daily-bar__date {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #5f5142;
+  font-variant-numeric: tabular-nums;
+}
+
+.daily-bar__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* 胶囊按钮在信息条里给一层白底，明确「可以点」，但高度仍压在小尺寸 */
+.daily-bar .btn--chip {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  background: #fffdf8;
+  color: #55483b;
+  box-shadow: 0 1px 2px rgba(116, 97, 79, 0.16);
+}
+
+.daily-bar .btn--chip:hover:not(:disabled) {
+  background: #fffdf8;
+  color: #55483b;
+}
+
 /* ---------- 控制条 ---------- */
 
 /*
@@ -412,6 +478,11 @@ body {
   grid-template-columns: 1.15fr 0.92fr 0.86fr 1.28fr 0.84fr;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+/* 第二排：每日挑战 / 复盘 / 成就，三列等宽，视觉权重低于第一排 */
+.controls--sub {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 /* ---------- 设置面板 ---------- */
@@ -929,6 +1000,449 @@ body {
   font-size: 13px;
 }
 
+/* ---------- 复盘 / 成就抽屉 ---------- */
+
+/*
+ * 全屏遮罩 + 居中纸面板。抽屉是 fixed 层，不占页面布局高度，
+ * 因此不会挤压棋盘的高度预算（.app 的 432px 固定开销不变）。
+ */
+.sheet {
+  position: fixed;
+  inset: 0;
+  /* 必须高于粒子层（40）：彩带可以飞过遮罩，但绝不能盖住复盘正文 */
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(58, 45, 33, 0.44);
+  backdrop-filter: blur(4px) saturate(1.02);
+  animation: overlay-in 180ms ease-out both;
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+body.is-sheet-open {
+  overflow: hidden;
+}
+
+.sheet__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  max-height: min(86vh, 640px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--paper-hi);
+  box-shadow: 0 30px 60px -34px rgba(58, 45, 33, 0.9);
+  overflow: hidden;
+  animation: sheet-in 220ms var(--ease-out) both;
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 14px 11px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet__head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #584a3c;
+}
+
+.sheet__body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+}
+
+.btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #8b7d70;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.btn--icon:hover:not(:disabled) {
+  background: rgba(94, 76, 58, 0.1);
+  color: #584a3c;
+}
+
+/* 指标行：四个等宽小格，和 HUD 的「上标签下数值」保持同一套语言 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(94, 76, 58, 0.045);
+  text-align: center;
+}
+
+.metric__label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+
+.metric__value {
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #5f5142;
+}
+
+.review-headline {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.55;
+  color: #5a4b3c;
+}
+
+.review-sub {
+  margin: 14px 0 7px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+}
+
+.review-p {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #75695d;
+}
+
+.review-tips {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #75695d;
+}
+
+.review-tips li {
+  margin-bottom: 3px;
+}
+
+.review-tips li::marker {
+  color: var(--accent);
+}
+
+/* 关键失误：左迷你盘面 + 右两行说明 */
+.blunder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.blunder:last-of-type {
+  border-bottom: 0;
+}
+
+.mini-grid {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  width: 68px;
+  height: 68px;
+  padding: 3px;
+  border-radius: 6px;
+  background: rgba(94, 76, 58, 0.12);
+}
+
+.mini-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  font-size: 6.5px;
+  font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.blunder__text {
+  min-width: 0;
+}
+
+.blunder__title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #5d4f41;
+}
+
+.blunder__sub {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.review-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 34px 10px 26px;
+  text-align: center;
+}
+
+.review-empty__text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+/* ---------- 成就 ---------- */
+
+/* 成就面板比复盘宽一档：2 列卡片放到 420px 里会挤成两行小字 */
+.sheet__panel--ach {
+  width: min(520px, 100%);
+}
+
+.ach-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ach-summary__count {
+  font-size: 12.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #5a4b3c;
+}
+
+.ach-summary__hint {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+
+.ach-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/*
+ * 一张卡片：档位 + 名称一行，描述一行，底部是进度条或解锁日期。
+ * 锁定项留白底、只给进度条；解锁项加一层暖金底 + 描边，扫一眼就能数出解锁了多少。
+ */
+.ach-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(94, 76, 58, 0.035);
+}
+
+.ach-card:focus-visible {
+  outline: 2px solid rgba(138, 118, 99, 0.55);
+  outline-offset: 2px;
+}
+
+.ach-card.is-unlocked {
+  border-color: rgba(180, 112, 58, 0.32);
+  background: linear-gradient(180deg, rgba(237, 194, 46, 0.14), rgba(180, 112, 58, 0.06));
+}
+
+.ach-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ach-card__name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 800;
+  color: #5d4f41;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ach-card__desc {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.ach-card__date {
+  margin: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: #9a7a4e;
+}
+
+/* 档位小胶囊：铜 / 银 / 金 */
+.ach-tier {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.ach-tier--bronze {
+  background: rgba(176, 120, 72, 0.18);
+  color: #8a5c31;
+}
+
+.ach-tier--silver {
+  background: rgba(140, 150, 160, 0.2);
+  color: #5f6b76;
+}
+
+.ach-tier--gold {
+  background: rgba(214, 166, 38, 0.22);
+  color: #8a6512;
+}
+
+.ach-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(94, 76, 58, 0.12);
+}
+
+.ach-progress__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #d59a5f);
+  transition: width 220ms var(--ease-out);
+}
+
+.ach-progress__text {
+  margin: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  text-align: right;
+}
+
+/* ---------- 解锁提示条 ---------- */
+
+/*
+ * 右下角竖排。层级放在粒子层（40）之上、抽屉（60）之下：
+ * 彩带可以飞过提示条，但面板一打开提示条就退到后面，不会挡住正文。
+ */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(260px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(180, 112, 58, 0.3);
+  border-radius: var(--radius-sm);
+  background: var(--paper-hi);
+  box-shadow: 0 12px 24px -16px rgba(58, 45, 33, 0.9);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: toast-in 220ms var(--ease-out) both;
+}
+
+.toast:hover {
+  border-color: rgba(180, 112, 58, 0.5);
+}
+
+.toast__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.toast__text strong {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: #5d4f41;
+}
+
+.toast__text small {
+  overflow: hidden;
+  font-size: 10px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* ---------- 页脚 ---------- */
 
 .footer {
@@ -938,6 +1452,54 @@ body {
   line-height: 1.4;
   color: var(--ink-faint);
   text-align: center;
+}
+
+/* ---------- 全屏粒子层与震屏 ---------- */
+
+/*
+ * 粒子画布固定铺满视口：合并时的爆点要能飞出棋盘、一直飘到屏幕边缘，
+ * 所以它不能挂在棋盘内部（会被 overflow / 圆角裁掉）。
+ * pointer-events:none 保证它永远不会挡住点击；层级在应用（1）之上、抽屉（60）之下。
+ */
+#fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 40;
+  pointer-events: none;
+}
+
+/*
+ * 震屏：整块应用短促位移，粒子层不动 —— 视觉上像「屏幕抖了一下」，
+ * 但如果连画布一起抖，粒子会被撕出黑边。
+ * --shake 由 fx 写入（0.1~1），位移幅度按它缩放。
+ */
+.app.is-shaking {
+  animation: app-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes app-shake {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  15% {
+    transform: translate3d(calc(-7px * var(--shake, 0.5)), calc(4px * var(--shake, 0.5)), 0);
+  }
+
+  35% {
+    transform: translate3d(calc(6px * var(--shake, 0.5)), calc(-3px * var(--shake, 0.5)), 0);
+  }
+
+  55% {
+    transform: translate3d(calc(-4px * var(--shake, 0.5)), calc(-3px * var(--shake, 0.5)), 0);
+  }
+
+  75% {
+    transform: translate3d(calc(3px * var(--shake, 0.5)), calc(2px * var(--shake, 0.5)), 0);
+  }
 }
 
 /* ---------- 矮窗口：压缩固定开销，把高度让给棋盘 ---------- */
@@ -1012,6 +1574,7 @@ body {
   .hud-gain.is-shown,
   .hud-timer.is-urgent::after,
   #autoplay.is-active::before,
+  .toast,
   .tile.is-hint .tile__inner {
     animation-duration: 1ms;
     animation-iteration-count: 1;
@@ -1019,7 +1582,13 @@ body {
 
   .board::after,
   .board::before,
+  .ach-progress__fill,
   .btn {
     transition: none;
+  }
+
+  /* 减少动态效果：震屏整段取消（粒子层本身在 fx.create 里已经是空操作） */
+  .app.is-shaking {
+    animation: none;
   }
 }

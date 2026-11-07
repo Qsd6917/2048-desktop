@@ -220,6 +220,15 @@ group('返回结构完整', () => {
   ok('dir 是合法方向', result !== null && DIRS.indexOf(result.dir) !== -1, '实际 ' + str(result && result.dir));
   ok('score 有限', result !== null && Number.isFinite(result.score), '实际 ' + str(result && result.score));
   ok('depth 是 >= 1 的整数', result !== null && Number.isInteger(result.depth) && result.depth >= 1, '实际 ' + str(result && result.depth));
+
+  const legalDirs = DIRS.filter((d) => moveChanges(MID_4, d)).sort();
+  eq('scores 覆盖全部合法方向', Object.keys(result.scores).sort(), legalDirs);
+  ok('scores[dir] === score',
+    result.scores[result.dir] === result.score,
+    'scores[dir] ' + str(result.scores[result.dir]) + ' / score ' + str(result.score));
+  ok('scores 每项都是有限数',
+    legalDirs.every((d) => Number.isFinite(result.scores[d])),
+    str(result.scores));
 });
 
 group('不污染真实棋盘', () => {
@@ -371,6 +380,11 @@ group('时间预算真的能生效', () => {
   ok('预算 0 仍返回能推动棋盘的合法方向',
     zero !== null && DIRS.indexOf(zero.dir) !== -1 && moveChanges(MID_4, zero.dir),
     '实际 ' + str(zero));
+
+  const zeroDirs = DIRS.filter((d) => moveChanges(MID_4, d)).sort();
+  eq('预算 0 时 scores 覆盖全部合法方向', Object.keys(zero.scores).sort(), zeroDirs);
+  ok('预算 0 时 scores[dir] === score', zero.scores[zero.dir] === zero.score,
+    'scores[dir] ' + str(zero.scores[zero.dir]) + ' / score ' + str(zero.score));
 });
 
 group('三种尺寸都能跑', () => {

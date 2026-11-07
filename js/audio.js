@@ -5,16 +5,20 @@
  *   - AudioContext 延迟到第一次真正发声时才创建，并在用户手势内 resume()，
  *     避免页面加载即被自动播放策略拦成 suspended；
  *   - 浏览器没有 WebAudio（或被禁用）时，所有方法都是安全的空操作；
- *   - setEnabled(false) 之后所有方法立刻返回，连 AudioContext 都不碰。
+ *   - setEnabled(false) 之后所有方法立刻返回，连 AudioContext 都不碰；
+ *   - 音高不在本文件里算：五声音阶映射全在 js/tuning.js，这里只负责把
+ *     音符表（freq/delayMs/durMs/gain）逐一合成出来。
  */
 (function (global) {
   'use strict';
 
   var AudioCtor = global.AudioContext || global.webkitAudioContext;
+  var Tuning = global.Game2048Tuning;
 
-  /** 合并音的基础音量；move 要更轻，否则每步都吵 */
-  var MERGE_GAIN = 0.06;
   var MOVE_GAIN = 0.03;
+
+  /** 合并与结算音用的波形：三角波比正弦多一层泛音，木质感更接近纸牌 */
+  var NOTE_TYPE = 'triangle';
 
   var context = null;
   var enabled = true;
@@ -43,11 +47,6 @@
     }
 
     return context;
-  }
-
-  /** 以 2 为底的对数（老环境没有 Math.log2） */
-  function log2(value) {
-    return Math.log(value) / Math.LN2;
   }
 
   /**
@@ -86,6 +85,19 @@
     osc.stop(startAt + duration + 0.02);
   }
 
+  /**
+   * 按音符表逐音发声。
+   * @param {Array<{freq:number, delayMs:number, durMs:number, gain:number}>} notes
+   * @param {OscillatorType} [type]
+   */
+  function playNotes(notes, type) {
+    if (!enabled || !notes) return;
+    for (var i = 0; i < notes.length; i++) {
+      var note = notes[i];
+      tone(note.freq, note.durMs, type || NOTE_TYPE, note.gain, note.delayMs);
+    }
+  }
+
   /** 普通移动：60ms 短促低音 */
   function move() {
     if (!enabled) return;
@@ -93,34 +105,86 @@
   }
 
   /**
-   * 合并：音高随方块数值升高。
-   * 基频 = 220 * 2^((log2(value) - 1) / 12)，每翻一倍方块升高一个半音。
+   * 单组合并：音高由方块值沿五声音阶决定。
+   * @param {number} value 合并出来的方块值
+   * @param {number} [combo] 连击数；>= 3 时多一个高八度弱音
    */
-  function merge(value) {
+  function merge(value, combo) {
     if (!enabled) return;
+
     var v = Number(value);
     if (!(v > 0)) {
       move();
       return;
     }
-    var frequency = 220 * Math.pow(2, (log2(v) - 1) / 12);
-    tone(frequency, 80, 'triangle', MERGE_GAIN, 0);
+    if (!Tuning) return;   // 脚本没按顺序加载时宁可不响，也不要抛错
+
+    playNotes(Tuning.mergeNotes([v], combo || 0), NOTE_TYPE);
   }
 
-  /** 达成目标：上行三连音 */
+  /**
+   * 一步里多组合并：按方块值升序播一段琶音。
+   * @param {Array<number>} values
+   * @param {number} [combo]
+   * @param {{accent?: boolean}} [opts] 透传给 tuning：大块合并（≥256）加高八度
+   */
+  function playMergeSet(values, combo, opts) {
+    if (!enabled || !Tuning) return;
+
+    var notes = Tuning.mergeNotes(values, combo || 0, opts);
+    if (!notes.length) {
+      move();
+      return;
+    }
+    playNotes(notes, NOTE_TYPE);
+  }
+
+  /** 达成目标：上行五音 */
   function win() {
-    if (!enabled) return;
-    tone(523.25, 130, 'triangle', MERGE_GAIN, 0);
-    tone(659.25, 130, 'triangle', MERGE_GAIN, 90);
-    tone(783.99, 220, 'triangle', MERGE_GAIN, 180);
+    if (!enabled || !Tuning) return;
+    playNotes(Tuning.winNotes(), NOTE_TYPE);
   }
 
-  /** 结束：下行三连音 */
+  /** 死局/超时：下行四音 */
   function gameover() {
-    if (!enabled) return;
-    tone(311.13, 150, 'sine', MERGE_GAIN, 0);
-    tone(261.63, 150, 'sine', MERGE_GAIN, 120);
-    tone(207.65, 260, 'sine', MERGE_GAIN, 240);
+    if (!enabled || !Tuning) return;
+    playNotes(Tuning.loseNotes(), 'sine');
+  }
+
+  /** 成就解锁：四音上行（本任务只提供接口，界面由成就模块触发） */
+  function achievement() {
+    if (!enabled || !Tuning) return;
+    playNotes(Tuning.achievementNotes(), NOTE_TYPE);
+  }
+
+  /** 每日挑战开始：两音上行 */
+  function dailyStart() {
+    if (!enabled || !Tuning) return;
+    playNotes(Tuning.dailyStartNotes(), NOTE_TYPE);
+  }
+
+  /**
+   * 连击亮点：音高随连击数在五声音阶里上行，两声短促叠音。
+   *
+   * 音级不能用「每次 +2 个半音」：那样会滑出五声、直冲 4kHz 变得很尖。
+   * 这里从 G5 起按 PENTATONIC 走级，连击封顶 6 级（最高 G6），
+   * 第二声取上方两级（仍是调内音），保证和别的音效协和。
+   *
+   * @param {number} combo
+   */
+  function comboSpark(combo) {
+    if (!enabled || !Tuning) return;
+
+    var level = Math.min(6, Math.max(1, Math.floor(Number(combo) || 1)));
+    var degree = level - 1;
+    var base = 79;   // G5
+
+    function midiOf(step) {
+      return base + Tuning.PENTATONIC[step % 5] + 12 * Math.floor(step / 5);
+    }
+
+    tone(Tuning.midiToFreq(midiOf(degree)), 90, 'sine', 0.05, 0);
+    tone(Tuning.midiToFreq(midiOf(degree + 2)), 110, 'sine', 0.035, 70);
   }
 
   /**
@@ -140,7 +204,11 @@
     isEnabled: isEnabled,
     move: move,
     merge: merge,
+    playMergeSet: playMergeSet,
     win: win,
-    gameover: gameover
+    gameover: gameover,
+    achievement: achievement,
+    dailyStart: dailyStart,
+    comboSpark: comboSpark
   };
 })(window);

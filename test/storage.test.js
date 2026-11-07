@@ -43,9 +43,10 @@ function eq(name, actual, expected) {
 /**
  * 可控的假 localStorage。
  *
- * @param {{limitWrites?: number, throwOnAccess?: boolean}} options
+ * @param {{limitWrites?: number, throwOnAccess?: boolean, noIteration?: boolean}} options
  *        limitWrites：前 N 次 setItem 成功，之后抛 QuotaExceededError
  *        （探测正好用掉 1 次写入，所以 limitWrites=1 就是「探测通过、正式写失败」）
+ *        noIteration：不提供 length / key(i)，模拟不支持遍历的旧后端
  */
 function fakeLocalStorage(options) {
   const opts = options || {};
@@ -77,6 +78,19 @@ function fakeLocalStorage(options) {
       return writes;
     }
   };
+
+  // 真 localStorage 支持按序号遍历；降级时的「整体搬迁」就靠这两个
+  if (!opts.noIteration) {
+    Object.defineProperty(ls, 'length', {
+      get() {
+        return Object.keys(data).length;
+      }
+    });
+    ls.key = function (i) {
+      const keys = Object.keys(data);
+      return i >= 0 && i < keys.length ? keys[i] : null;
+    };
+  }
 
   if (opts.throwOnAccess) {
     // 隐私模式下连访问方法属性本身都抛异常
@@ -272,6 +286,41 @@ console.log('\n存档盘面校验');
   ok('含超上限脏值拒绝', S.validateValues([[Math.pow(2, 31), 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
   ok('含非法负数拒绝', S.validateValues([[-3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
   ok('尺寸与盘面不符拒绝', S.validateValues(good5, 4) === false);
+}
+
+/* ---------- 7. 降级时把动态键整条搬进内存 ---------- */
+
+console.log('\n配额降级时整条搬迁（含 review.<日期> 动态键）');
+
+{
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+
+  // 复盘键是 review.<YYYYMMDD>，不在 KEYS 里：只按 KEYS 搬会把它丢在旧后端
+  const review = { date: '20261107', moves: [{ d: 'left', v: [[2, 0], [0, 0]], g: 4 }], summary: { scored: 1 } };
+  ok('复盘先正常落盘', S.set('review.20261107', review) === true);
+  eq('前置：真实存储里确实有这条复盘', ls.getItem('game2048.v2.review.20261107') !== null, true);
+  S.saveStats({ games: 2, bestScore: 64 });
+
+  ls.limitAfter(ls.writes());   // 从下一次写入开始配额满 → 触发降级
+
+  ok('触发降级的写入仍算成功', S.set(S.KEYS.state, { score: 1 }) === true);
+  eq('降级后 review.<今日-键> 能取回原值', S.get('review.20261107', null), review);
+  eq('降级后统计也还在（整体搬迁没漏掉固定键）', S.loadStats().games, 2);
+  eq('降级后新写的数据也在', S.get(S.KEYS.state, null), { score: 1 });
+}
+
+{
+  // 旧后端不支持 length / key(i)：退回按 KEYS 逐个搬，至少保住固定键
+  const ls = fakeLocalStorage({ noIteration: true });
+  const S = loadStorage(ls);
+
+  S.saveStats({ games: 5 });
+  ls.limitAfter(ls.writes());
+
+  ok('不支持遍历时降级写入仍成功', S.set(S.KEYS.state, { score: 2 }) === true);
+  eq('退回逐个搬也能保住统计', S.loadStats().games, 5);
+  eq('新写的数据读得到', S.get(S.KEYS.state, null), { score: 2 });
 }
 
 /* ---------- 汇总 ---------- */
