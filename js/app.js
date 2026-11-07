@@ -232,6 +232,23 @@
     return state.dailyRng();
   }
 
+  /**
+   * 按当前 rngCount 重建每日随机源。
+   *
+   * 随机函数是闭包，没法往回退；撤销 / 读档要回到序列的某个位置，
+   * 只能重新 create 再 skip 到同一个计数。非每日局保持 null。
+   */
+  function restoreDailyRng() {
+    if (!state.dailyKey) {
+      state.dailyRng = null;
+      return;
+    }
+
+    var rng = Rng.create(state.dailyKey);
+    Rng.skip(rng, state.rngCount);
+    state.dailyRng = rng.next;
+  }
+
   /** 千分位自实现：不依赖 toLocaleString 的地区行为 */
   function formatNumber(value) {
     var text = String(Math.max(0, Math.floor(Number(value) || 0)));
@@ -460,7 +477,9 @@
       keepPlaying: state.keepPlaying,
       remainingMs: state.remainingMs,
       obstaclesAdded: state.obstaclesAdded,
-      moves: state.moves
+      moves: state.moves,
+      // 随机序列位置也要回退：否则撤销后重走同一步会重掷新块
+      rngCount: state.rngCount
     });
     if (state.history.length > UNDO_LIMIT) state.history.shift();
   }
@@ -851,7 +870,11 @@
     state.remainingMs = snapshot.remainingMs;
     state.obstaclesAdded = snapshot.obstaclesAdded;
     state.moves = snapshot.moves;
+    state.rngCount = snapshot.rngCount || 0;
     state.over = false;
+
+    // 随机序列回到走这一步之前的位置：重走同一步会得到同样的新块
+    restoreDailyRng();
 
     hideOverlay();
     renderer.renderBoard(state.board, { instant: true });
@@ -963,9 +986,18 @@
     if (hadFocus && els.board) els.board.focus();
   }
 
+  /**
+   * 结算浮层里的「再来一局」：
+   * 当日每日局续一场每日挑战（仍用今天的种子），其余情况按普通新局处理。
+   */
+  function restartSame() {
+    if (state.dailyKey && state.dailyKey === Rng.dateKey(new Date())) startDaily();
+    else startNewGame();
+  }
+
   /** 通用按钮组：再来一局必给；有历史才给撤销 */
   function endingActions(withUndo) {
-    var actions = [{ label: '再来一局', primary: true, onClick: startNewGame }];
+    var actions = [{ label: '再来一局', primary: true, onClick: restartSame }];
     if (withUndo) actions.push({ label: '撤销一步', onClick: undo });
     return actions;
   }
@@ -973,7 +1005,7 @@
   function showWinOverlay() {
     var actions = [
       { label: '继续挑战', primary: true, onClick: continuePlaying },
-      { label: '再来一局', onClick: startNewGame }
+      { label: '再来一局', onClick: restartSame }
     ];
     if (state.history.length) actions.push({ label: '撤销一步', onClick: undo });
 
@@ -1201,9 +1233,7 @@
             state.dailyKey = saved.daily;
             state.rngCount = saved.rngCount;
             state.dailyRecorded = saved.dailyRecorded;
-            var restoredRng = Rng.create(state.dailyKey);
-            Rng.skip(restoredRng, state.rngCount);
-            state.dailyRng = restoredRng.next;
+            restoreDailyRng();
           } else {
             // 跨日：盘面照常恢复，只是不再属于今天的挑战
             dailyExpired = true;

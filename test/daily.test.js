@@ -5,9 +5,10 @@
  * 覆盖：
  *   1. emptyStore 的形状与「每次都是新对象」；
  *   2. startAttempt / recordResult 的累计口径与不可变性；
- *   3. streakOf 的今天未打、缺天断签、跨月/跨年连续；
- *   4. recent 的长度、顺序与今天标记；
- *   5. normalizeStore 逐字段回退、非法日期键丢弃、60 天截断。
+ *   3. bestStreak 只增不减（连续、断签、跨月、回填旧日期）；
+ *   4. streakOf 的今天未打、缺天断签、跨月/跨年连续；
+ *   5. recent 的长度、顺序与今天标记；
+ *   6. normalizeStore 逐字段回退、非法日期键丢弃、60 天截断。
  */
 'use strict';
 
@@ -125,7 +126,45 @@ group('recordResult', function () {
     .days['20261109'].finishes, 1);
 });
 
-/* ---------- 4. streakOf ---------- */
+/* ---------- 4. bestStreak ---------- */
+
+group('bestStreak', function () {
+  let store = Daily.emptyStore();
+
+  store = Daily.startAttempt(store, '20261106', 1);
+  store = Daily.recordResult(store, '20261106',
+    { score: 10, moves: 5, maxTile: 8, won: false }, 2);
+  eq('第一天打完 bestStreak=1', store.bestStreak, 1);
+
+  store = Daily.startAttempt(store, '20261107', 3);
+  store = Daily.recordResult(store, '20261107',
+    { score: 20, moves: 6, maxTile: 16, won: false }, 4);
+  eq('连续两天打完 bestStreak=2', store.bestStreak, 2);
+
+  // 中间缺一天：当前连续回到 1，但历史最长不能被改小
+  store = Daily.startAttempt(store, '20261109', 5);
+  store = Daily.recordResult(store, '20261109',
+    { score: 30, moves: 7, maxTile: 32, won: false }, 6);
+  eq('断签后 bestStreak 仍保持 2', store.bestStreak, 2);
+
+  // 跨月连续：20260131 -> 20260201
+  let month = Daily.emptyStore();
+  month = Daily.startAttempt(month, '20260131', 1);
+  month = Daily.recordResult(month, '20260131',
+    { score: 10, moves: 5, maxTile: 8, won: false }, 2);
+  month = Daily.startAttempt(month, '20260201', 3);
+  month = Daily.recordResult(month, '20260201',
+    { score: 20, moves: 6, maxTile: 16, won: false }, 4);
+  eq('跨月连续两天 bestStreak=2', month.bestStreak, 2);
+
+  // 回填一个孤立旧日期，不能把已有的最长纪录改小
+  const keep = Daily.normalizeStore({ bestStreak: 5, days: {} });
+  const backfilled = Daily.recordResult(keep, '20261107',
+    { score: 10, moves: 5, maxTile: 8, won: false }, 1);
+  eq('回填旧日期不改小历史最长', backfilled.bestStreak, 5);
+});
+
+/* ---------- 5. streakOf ---------- */
 
 group('streakOf', function () {
   eq('今天打了、往前连续三天', Daily.streakOf(
@@ -154,7 +193,7 @@ group('streakOf', function () {
   eq('非法 todayKey 不炸', Daily.streakOf(storeWith(['20261106']), 'x'), { current: 0, atRisk: false });
 });
 
-/* ---------- 5. recent ---------- */
+/* ---------- 6. recent ---------- */
 
 group('recent', function () {
   let store = storeWith(['20260131', '20260201']);
@@ -179,7 +218,7 @@ group('recent', function () {
   eq('n 非法按 0 处理', Daily.recent(store, '20260201', 'x'), []);
 });
 
-/* ---------- 6. bestOf ---------- */
+/* ---------- 7. bestOf ---------- */
 
 group('bestOf', function () {
   let store = storeWith(['20261107']);
@@ -197,7 +236,7 @@ group('bestOf', function () {
   eq('非法键为 null', Daily.bestOf(store, 'bad'), null);
 });
 
-/* ---------- 7. normalizeStore ---------- */
+/* ---------- 8. normalizeStore ---------- */
 
 group('normalizeStore', function () {
   eq('null 得到空 store', Daily.normalizeStore(null),

@@ -201,6 +201,11 @@
     if (data.won === true) record.won = true;
     record.lastAt = toCount(now === undefined ? Date.now() : now);
 
+    // 历史最长连续：以这次记录的日期为「今天」回看。
+    // 只增不减 —— 回填旧日期时不能把已经攒下的纪录改小。
+    var currentStreak = streakOf(next, key).current;
+    if (currentStreak > next.bestStreak) next.bestStreak = currentStreak;
+
     trimDays(next);
     return next;
   }
