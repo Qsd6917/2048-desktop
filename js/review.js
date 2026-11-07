@@ -168,10 +168,41 @@
   }
 
   /**
+   * 把从存档里读回来的日志洗成可用结构。
+   *
+   * 日期一律以局面的每日键为准（不信存档里的自述），步数同样按 240 截断；
+   * 每条记录都过一遍 copyEntry，存档被手改 / 截断时也不会把脏数据带进复盘或评分。
+   * 非法条目保留成空壳而不是过滤掉 —— 下标必须和真实步数一一对应，撤销裁剪才不会错位。
+   *
+   * @param {*} raw 存档里的日志
+   * @param {string} dateKey 当前局面的日期键
+   * @returns {object} 可直接使用的日志（summary 恒为 null）
+   */
+  function normalizeLog(raw, dateKey) {
+    var base = raw && typeof raw === 'object' ? raw : null;
+    var moves = base && Array.isArray(base.moves) ? base.moves : [];
+    var out = [];
+
+    for (var i = 0; i < moves.length; i++) out.push(copyEntry(moves[i]));
+    if (out.length > MAX_MOVES) out = out.slice(out.length - MAX_MOVES);
+
+    var date = typeof dateKey === 'string'
+      ? dateKey
+      : (base && typeof base.date === 'string' ? base.date : '');
+
+    return {
+      version: LOG_VERSION,
+      date: date,
+      moves: out,
+      summary: null
+    };
+  }
+
+  /**
    * 汇总一局：一致率、平均亏损、最差几步。
    *
-   * 只统计「已评分」的步（b/s/t 齐全）；没有任何样本时 scored=0、两项指标记 0，
-   * 调用方据此显示空指标而不是崩掉。
+   * 只统计「已评分」的步（b/s/t 齐全）；没有任何样本时 scored=0、两项指标记 0、
+   * 评级记「—」，调用方据此显示空指标而不是崩掉。
    *
    * @param {object} log 复盘日志
    * @param {{score:number, moves:number, maxTile:number, won:boolean}} meta 本局结果
@@ -225,7 +256,8 @@
     var consistency = scored > 0 ? matched / scored : 0;
 
     return {
-      grade: gradeFor(consistency),
+      // 一步都没算完时不编评级：与 UI 的「—」保持一致，别让空数据顶着 D
+      grade: scored > 0 ? gradeFor(consistency) : '—',
       consistency: consistency,
       avgLoss: scored > 0 ? lossSum / scored : 0,
       matched: matched,
@@ -403,6 +435,7 @@
     colorFor: colorFor,
     emptyLog: emptyLog,
     appendMove: appendMove,
+    normalizeLog: normalizeLog,
     summarize: summarize,
     analyze: analyze
   };

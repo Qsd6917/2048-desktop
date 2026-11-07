@@ -74,6 +74,7 @@ group('结构', () => {
   eq('MAX_MOVES 为 240', Review.MAX_MOVES, 240);
   ok('emptyLog 是函数', typeof Review.emptyLog === 'function');
   ok('appendMove 是函数', typeof Review.appendMove === 'function');
+  ok('normalizeLog 是函数', typeof Review.normalizeLog === 'function');
   ok('summarize 是函数', typeof Review.summarize === 'function');
   ok('analyze 是函数', typeof Review.analyze === 'function');
   ok('TILE_COLORS 带经典色板', Review.TILE_COLORS['2'].background === '#eee4da' &&
@@ -137,6 +138,35 @@ group('appendMove 容错', () => {
   eq('缺日志时日期为空串', next.date, '');
 });
 
+group('normalizeLog 洗存档数据', () => {
+  const raw = {
+    version: 1,
+    date: '20250101',
+    moves: [
+      { d: 'left', v: GRID, g: 4, b: 'up', s: 9, t: 8 },
+      null,
+      { d: 'wat', v: 'x', g: 'y' }
+    ],
+    summary: { grade: 'A' }
+  };
+  const log = Review.normalizeLog(raw, '20261107');
+
+  eq('日期以传入的每日键为准', log.date, '20261107');
+  eq('非法条目保留占位（下标不能错位）', log.moves.length, 3);
+  eq('不信任存档里的 summary', log.summary, null);
+  eq('已评分字段原样保留', [log.moves[0].b, log.moves[0].s, log.moves[0].t], ['up', 9, 8]);
+  eq('空条目洗成空壳', [log.moves[1].d, log.moves[1].b, log.moves[1].v], [null, null, []]);
+  eq('非法方向折成 null', log.moves[2].d, null);
+  ok('values 是深拷贝', log.moves[0].v[0] !== GRID[0]);
+  eq('非对象输入给空日志', Review.normalizeLog(null, '20261107').moves, []);
+
+  const many = [];
+  for (let i = 0; i < 245; i++) many.push({ d: 'left', v: GRID, g: i, b: null, s: null, t: null });
+  const capped = Review.normalizeLog({ moves: many }, '20261107');
+  eq('同样按 240 步截断', capped.moves.length, 240);
+  eq('保留最新一步', capped.moves[239].g, 244);
+});
+
 /* ---------- summarize ---------- */
 
 group('summarize 的一致率 / 平均亏损 / 最差步', () => {
@@ -183,7 +213,7 @@ group('summarize 无评分样本不崩', () => {
   eq('一致率记 0', summary.consistency, 0);
   eq('平均亏损记 0', summary.avgLoss, 0);
   eq('worst 为空', summary.worst, []);
-  eq('评级按 0 一致率落到 D', summary.grade, 'D');
+  eq('评级与 UI 一致记「—」', summary.grade, '—');
 });
 
 group('summarize 按本局总步数补回步号', () => {

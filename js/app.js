@@ -422,6 +422,58 @@
   }
 
   /**
+   * 读档后恢复复盘日志：已评分的步原样保留，b 还是 null 的重新排队补算。
+   * 存档里的步与局面同步写入，所以「刷新前走了多少步」复盘就覆盖多少步。
+   *
+   * @param {*} raw 存档里的日志
+   * @param {string} dateKey 当前局面的日期键
+   */
+  function restoreReviewLog(raw, dateKey) {
+    clearEvalTimer();
+    evalQueue.length = 0;
+
+    var log = Review.normalizeLog(raw, dateKey);
+    state.reviewLog = log;
+
+    for (var i = 0; i < log.moves.length; i++) {
+      if (log.moves[i].b === null) evalQueue.push({ entry: log.moves[i], index: i });
+    }
+    while (evalQueue.length > EVAL_QUEUE_LIMIT) evalQueue.shift();
+    scheduleEval();
+  }
+
+  /** 撤销后丢掉被裁掉那些步的待办评分（下标 >= keep 的一律作废） */
+  function trimEvalQueue(keep) {
+    var kept = [];
+    for (var i = 0; i < evalQueue.length; i++) {
+      if (evalQueue[i].index < keep) kept.push(evalQueue[i]);
+    }
+
+    evalQueue.length = 0;
+    for (var j = 0; j < kept.length; j++) evalQueue.push(kept[j]);
+  }
+
+  /**
+   * 撤销时把复盘日志裁回快照步数。
+   *
+   * 日志有 240 步上限，不能拿「快照步数」当长度直接用：
+   * 先按本次撤销掉了几步从尾部砍，再和日志实际长度取交集；
+   * 这样即使更早的步已经被截断，也能准确丢掉刚撤销的那一步。
+   */
+  function trimReviewOnUndo(targetMoves) {
+    if (!state.reviewLog) return;
+
+    var dropped = Math.max(0, state.moves - Math.max(0, Math.floor(Number(targetMoves) || 0)));
+    var length = state.reviewLog.moves.length;
+    var keep = Math.max(0, length - dropped);
+
+    clearEvalTimer();
+    if (length > keep) state.reviewLog.moves.length = keep;
+    trimEvalQueue(keep);
+    if (evalQueue.length) scheduleEval();
+  }
+
+  /**
    * 走子成功后追加一条复盘记录，并把这一步排进评分队列。
    * 只做 push 和排期，不做任何搜索 —— 连续快速按键时不会有额外卡顿。
    */
@@ -437,7 +489,11 @@
       t: null
     });
 
-    evalQueue.push({ entry: state.reviewLog.moves[state.reviewLog.moves.length - 1] });
+    evalQueue.push({
+      entry: state.reviewLog.moves[state.reviewLog.moves.length - 1],
+      // 队列下标与日志下标一致，撤销裁剪时按它判断哪些待办已经作废
+      index: state.reviewLog.moves.length - 1
+    });
     while (evalQueue.length > EVAL_QUEUE_LIMIT) evalQueue.shift();
     scheduleEval();
   }
@@ -456,7 +512,9 @@
 
   /**
    * 结算时落盘复盘：补算剩余评分 -> 汇总 -> 写入 review.<dateKey>。
-   * 只在「今天的每日局」结算时做一次；写盘后清空内存日志，避免重复写。
+   *
+   * 一局最多结算两次：达成目标先写一份，继续挑战后卡死 / 超时再覆盖同一键。
+   * 两次都基于同一份内存日志，所以第二次天然覆盖整局；日志留到开新局才重置。
    */
   function finalizeReview() {
     if (!state.reviewLog) return;
@@ -470,7 +528,6 @@
     };
 
     flushEvalQueue({ budgetMs: FLUSH_BUDGET_MS });
-    evalQueue.length = 0;   // 预算内没算完的宁可丢掉，也不让回调在结算后继续跑
 
     Storage.set(Storage.KEYS.review + '.' + state.dailyKey, {
       version: state.reviewLog.version,
@@ -481,7 +538,9 @@
       meta: meta
     });
 
-    state.reviewLog = null;
+    // 继续挑战会接着这局玩：日志与未算完的队列都留着继续累积。
+    // 最终结算同样不在这里清空 —— 只有开新局 / 换每日 / 撤销才会重置或裁剪。
+    if (evalQueue.length) scheduleEval();
   }
 
   /** 非负整数，用于把存档里的脏数据折成 0 */
@@ -583,7 +642,7 @@
     parts.push(metricHtml('分数', formatNumber(ctx.score)));
     parts.push(metricHtml('一致性', summary.scored > 0 ? Math.round(summary.consistency * 100) + '%' : '—'));
     parts.push(metricHtml('平均让子', summary.scored > 0 ? summary.avgLoss.toFixed(2) : '—'));
-    parts.push(metricHtml('评级', summary.scored > 0 ? summary.grade : '—'));
+    parts.push(metricHtml('评级', summary.grade));
     parts.push('</div>');
 
     if (summary.worst.length) {
@@ -793,7 +852,10 @@
       daily: state.dailyKey,
       rngCount: state.rngCount,
       dailyRecorded: state.dailyRecorded,
-      dailyRecordedMoves: state.dailyRecordedMoves
+      dailyRecordedMoves: state.dailyRecordedMoves,
+      // 复盘日志跟着局面一起存：刷新后复盘仍覆盖整局。
+      // 只有每日局才写，普通局不白增体积（约 15–25KB / 240 步）。
+      reviewLog: state.dailyKey ? state.reviewLog : null
     });
   }
 
@@ -842,6 +904,9 @@
         : Math.min(moves, Math.max(0, Math.floor(Number(data.dailyRecordedMoves) || 0)));
     }
 
+    // 复盘日志跟局面一起存；日期以每日键为准，普通局不认这份日志
+    var reviewLog = daily ? Review.normalizeLog(data.reviewLog, daily) : null;
+
     return {
       size: size,
       mode: data.mode,
@@ -857,7 +922,8 @@
       daily: daily,
       rngCount: rngCount,
       dailyRecorded: dailyRecorded,
-      dailyRecordedMoves: dailyRecordedMoves
+      dailyRecordedMoves: dailyRecordedMoves,
+      reviewLog: reviewLog
     };
   }
 
@@ -1283,6 +1349,9 @@
     state.busy = false;
     pendingDir = null;    // 缓冲的是「撤销前那一手之后」的意图，跟着一起作废
 
+    // 复盘跟着回退：裁掉被撤销的步，并作废它们的待办评分（必须在改 state.moves 之前算）
+    trimReviewOnUndo(snapshot.moves);
+
     state.board = G.boardFromValues(snapshot.values);
     state.score = snapshot.score;
     state.won = snapshot.won;
@@ -1674,8 +1743,9 @@
             state.dailyRecorded = saved.dailyRecorded;
             state.dailyRecordedMoves = saved.dailyRecordedMoves;
             restoreDailyRng();
-            // 刷新后续玩的这几步照常进复盘；刷新前的盘面日志不落盘，只能从零记
-            resetReviewLog(saved.daily);
+            // 复盘日志随局面存档：刷新前走了多少步，复盘就覆盖多少步；
+            // 没算完的步重新排队补评分
+            restoreReviewLog(saved.reviewLog, saved.daily);
           } else {
             // 跨日：盘面照常恢复，只是不再属于今天的挑战
             dailyExpired = true;
