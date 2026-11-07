@@ -289,14 +289,6 @@
     });
   }
 
-  /** 存档里的一格只能是：null/0 空格、-1 障碍、2 的正整数次幂方块 */
-  function isValidCell(value) {
-    if (value === null || value === 0 || value === -1) return true;
-    if (typeof value !== 'number' || !isFinite(value) || value < 2) return false;
-    var exponent = Math.log2(value);
-    return exponent === Math.floor(exponent) && exponent <= 30;
-  }
-
   /** 读档并校验形状；任何一处不合法就整份丢弃（宁可从新局开始，也不要白屏） */
   function readSaved() {
     var data = Storage.get(Storage.KEYS.state, null);
@@ -307,15 +299,9 @@
     if (!Object.prototype.hasOwnProperty.call(MODES, data.mode)) return null;
 
     var values = data.values;
-    if (!Array.isArray(values) || values.length !== size) return null;
-    for (var r = 0; r < size; r++) {
-      if (!Array.isArray(values[r]) || values[r].length !== size) return null;
-      // 合法 JSON 也可能装着脏数据（手改 / 别的脚本写坏），逐格校验，
-      // 否则 boardFromValues 会造出 value 为字符串的方块，之后合并全变 NaN
-      for (var c = 0; c < size; c++) {
-        if (!isValidCell(values[r][c])) return null;
-      }
-    }
+    // 盘面形状 + 逐格取值都交给 storage 层校验（-1/0/2^n 白名单），
+    // 任何一处不合法整份丢弃（宁可从新局开始，也不要合并出 NaN）
+    if (!Storage.validateValues(values, size)) return null;
 
     var limit = MODES[data.mode].timeLimitMs;
     var remaining = Math.max(0, Math.floor(Number(data.remainingMs) || 0));

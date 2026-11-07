@@ -166,6 +166,37 @@
   }
 
   /**
+   * 存档里的一格只能是：null/0 空格、-1 障碍、2 的正整数次幂方块（上限 2^30）。
+   *
+   * 合法 JSON 也可能装着脏数据（手改 / 别的脚本写坏），逐格校验，
+   * 否则 boardFromValues 会造出 value 为字符串的方块，之后合并全变 NaN。
+   */
+  function isValidCell(value) {
+    if (value === null || value === 0 || value === -1) return true;
+    if (typeof value !== 'number' || !isFinite(value) || value < 2) return false;
+    var exponent = Math.log2(value);
+    return exponent === Math.floor(exponent) && exponent <= 30;
+  }
+
+  /**
+   * 校验存档盘面：必须是 size×size 方阵，且每格取值合法。
+   *
+   * @param {*} values 待校验的二维数组
+   * @param {number} size 期望的棋盘边长（4/5/6）
+   * @returns {boolean} 全部合法才返回 true
+   */
+  function validateValues(values, size) {
+    if (!Array.isArray(values) || values.length !== size) return false;
+    for (var r = 0; r < size; r++) {
+      if (!Array.isArray(values[r]) || values[r].length !== size) return false;
+      for (var c = 0; c < size; c++) {
+        if (!isValidCell(values[r][c])) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * 把任意来源的统计对象整理成完整结构：
    * 缺字段补 0、多余字段丢弃、bySize 里每一项也补齐。
    */
@@ -216,6 +247,8 @@
     remove: remove,
     normalizeStats: normalizeStats,
     loadStats: loadStats,
-    saveStats: saveStats
+    saveStats: saveStats,
+    isValidCell: isValidCell,
+    validateValues: validateValues
   };
 })(window);

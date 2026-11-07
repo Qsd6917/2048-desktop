@@ -217,6 +217,63 @@ console.log('\n无法序列化的值');
   eq('undefined 也不写入', S.set('state', undefined), false);
 }
 
+/* ---------- 6. 存档盘面校验（isValidCell / validateValues） ---------- */
+
+console.log('\n存档盘面校验');
+
+{
+  const S = loadStorage(fakeLocalStorage());
+
+  // 单格白名单：该收的收
+  ok('空格 null 合法', S.isValidCell(null) === true);
+  ok('空格 0 合法', S.isValidCell(0) === true);
+  ok('障碍 -1 合法', S.isValidCell(-1) === true);
+  ok('方块 2 合法', S.isValidCell(2) === true);
+  ok('方块 1024 合法', S.isValidCell(1024) === true);
+  ok('上限 2^30 合法', S.isValidCell(Math.pow(2, 30)) === true);
+
+  // 单格白名单：该拒的拒（脏存档曾让合并算出 NaN，这里逐条钉死）
+  ok('字符串 "2" 拒', S.isValidCell('2') === false);
+  ok('负数 -3 拒', S.isValidCell(-3) === false);
+  ok('1 拒', S.isValidCell(1) === false);
+  ok('非 2 的幂 6 拒', S.isValidCell(6) === false);
+  ok('小数 2.5 拒', S.isValidCell(2.5) === false);
+  ok('超上限 2^31 拒', S.isValidCell(Math.pow(2, 31)) === false);
+  ok('NaN 拒', S.isValidCell(NaN) === false);
+  ok('Infinity 拒', S.isValidCell(Infinity) === false);
+  ok('undefined 拒', S.isValidCell(undefined) === false);
+  ok('数组拒', S.isValidCell([]) === false);
+  ok('对象拒', S.isValidCell({}) === false);
+
+  // 整盘形状 + 取值：该收的收
+  const good4 = [
+    [2, 0, 0, -1],
+    [0, 4, 0, 0],
+    [0, 0, 1024, 0],
+    [0, 0, 0, 2]
+  ];
+  const good5 = [
+    [0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0],
+    [0, 0, 2, 0, 0],
+    [0, 0, 0, 0, 0],
+    [0, 0, 0, 0, -1]
+  ];
+  ok('4×4 合法盘面通过', S.validateValues(good4, 4) === true);
+  ok('5×5 合法盘面通过', S.validateValues(good5, 5) === true);
+
+  // 整盘形状 + 取值：该拒的拒
+  ok('非数组拒绝', S.validateValues('x', 4) === false);
+  ok('行数不足拒绝', S.validateValues([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('行长度不足拒绝', S.validateValues([[0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('行不是数组拒绝', S.validateValues([0, 0, 0, 0], 4) === false);
+  ok('含字符串脏值拒绝', S.validateValues([[2, '2', 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('含非 2 幂脏值拒绝', S.validateValues([[6, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('含超上限脏值拒绝', S.validateValues([[Math.pow(2, 31), 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('含非法负数拒绝', S.validateValues([[-3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], 4) === false);
+  ok('尺寸与盘面不符拒绝', S.validateValues(good5, 4) === false);
+}
+
 /* ---------- 汇总 ---------- */
 
 console.log('\n通过 ' + pass + ' 项，失败 ' + fail + ' 项');
