@@ -281,6 +281,12 @@
   var tickLast = 0;          // 上一次扣时的基准时刻，避免累计漂移
   var autoplayTimer = null;  // 托管 / 提示用 setTimeout
   var autoplay = false;      // 托管开关（与定时器分开管理）
+  /**
+   * 托管是不是被抽屉「临时」关掉的（运行时标志，不落盘）。
+   * 抽屉打开时 isLocked() 会挡住棋盘输入，排了期也走不动；显式关掉、关闭抽屉时再恢复，
+   * 按钮状态才和 AI 的实际行为一致。
+   */
+  var autoplayPausedBySheet = false;
 
   /** 动画期间缓冲的玩家方向：最多一格，只保留最后一次按键（不进撤销语义） */
   var pendingDir = null;
@@ -894,10 +900,32 @@
     '</div>';
   }
 
+  /** 抽屉打开：正在托管的话先暂停并记住，关闭时才知道要不要恢复 */
+  function pauseAutoplayForSheet() {
+    if (!autoplay) return;
+    autoplayPausedBySheet = true;
+    disableAutoplay();
+  }
+
+  /**
+   * 抽屉关闭后恢复托管。
+   * 另一个抽屉还开着、或抽屉背后这一局已经结算（浮层在等玩家）时都不恢复：
+   * 前者要继续保持暂停，后者恢复出来的只会是一个「按钮亮着但 AI 不动」的假开启。
+   */
+  function resumeAutoplayAfterSheet() {
+    if (!autoplayPausedBySheet) return;
+    if (isReviewOpen() || isAchOpen()) return;
+
+    autoplayPausedBySheet = false;
+    if (state.over || !state.board) return;
+    enableAutoplay();
+  }
+
   function openReview() {
     if (!els.reviewSheet) return;
 
-    stopCountdown();   // 限时局看复盘不计时：抽屉开着时不能被判超时
+    pauseAutoplayForSheet();   // 抽屉挡住棋盘，托管排了期也走不动：显式暂停
+    stopCountdown();           // 限时局看复盘不计时：抽屉开着时不能被判超时
     reviewReturnFocus = document.activeElement;
     try {
       renderReviewSheet();
@@ -919,6 +947,8 @@
     document.body.classList.remove('is-sheet-open');
     // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
     startCountdown();
+    // 托管是打开抽屉时暂停的，关掉之后恢复 —— 另一个抽屉还开着就不恢复
+    resumeAutoplayAfterSheet();
 
     var target = reviewReturnFocus;
     reviewReturnFocus = null;
@@ -1010,7 +1040,8 @@
   function openAchievements() {
     if (!els.achSheet) return;
 
-    stopCountdown();   // 与复盘一致：面板开着时不计时，避免背面被判超时
+    pauseAutoplayForSheet();   // 与复盘一致：面板开着时托管暂停，关闭后再恢复
+    stopCountdown();           // 与复盘一致：面板开着时不计时，避免背面被判超时
     achReturnFocus = document.activeElement;
     renderAchSheet();
     els.achSheet.hidden = false;
@@ -1025,6 +1056,8 @@
     document.body.classList.remove('is-sheet-open');
     // 恢复倒计时；startCountdown 自带「非限时 / 已结束 / 没剩余时间」的保护
     startCountdown();
+    // 托管是打开面板时暂停的，关掉之后恢复 —— 另一个面板还开着就不恢复
+    resumeAutoplayAfterSheet();
 
     var target = achReturnFocus;
     achReturnFocus = null;
@@ -1448,6 +1481,18 @@
     if (wasOn) syncControls();
   }
 
+  /**
+   * 开启托管并排期。
+   * 与 toggleAutoplay 的开启分支、抽屉关闭后的恢复共用，避免两处各写一遍
+   * 「置位 + syncControls + scheduleAutoplay」。
+   */
+  function enableAutoplay() {
+    autoplayPausedBySheet = false;   // 真的开了就不存在「被抽屉暂停」这回事
+    autoplay = true;
+    syncControls();
+    scheduleAutoplay(AUTOPLAY_DELAY_MS);
+  }
+
   /* ---------- 一局的开始与结束 ---------- */
 
   /**
@@ -1493,7 +1538,8 @@
 
     stopCountdown();
     clearAutoplayTimer();
-
+    // 换局一律作废「被抽屉暂停」的记忆：新的一局该不该托管由调用方的 autoplay 决定
+    autoplayPausedBySheet = false;
     state.session += 1;
     state.history.length = 0;
     state.score = 0;
@@ -2041,15 +2087,18 @@
       setStatus('托管已关闭');
       return;
     }
+    // 抽屉开着时棋盘被锁住，排了期也走不动：直接拒绝，别让按钮亮着骗人
+    if (isReviewOpen() || isAchOpen()) {
+      setStatus('先关掉面板再开托管');
+      return;
+    }
     if (state.over) {
       setStatus('这一局已经结束，先开新局');
       return;
     }
 
-    autoplay = true;
-    syncControls();
+    enableAutoplay();
     setStatus('托管已开启');
-    scheduleAutoplay(AUTOPLAY_DELAY_MS);
   }
 
   /* ---------- 浮层 ---------- */

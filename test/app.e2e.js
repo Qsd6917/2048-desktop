@@ -998,8 +998,64 @@ async function main() {
   check('同一局再结算 wins 仍是 +1', (await profileWins()) === winsBeforeZero + 1,
     winsBeforeZero + ' -> ' + (await profileWins()));
 
-  /* ---------- T17 控制台 ---------- */
-  console.log('\n[T17] 控制台');
+  /* ---------- T17 托管 + 复盘抽屉：打开暂停、关闭恢复 ---------- */
+  console.log('\n[T17] 托管与复盘抽屉：打开即暂停，关闭后继续跑');
+
+  /**
+   * 存档里的当前步数；结算后存档会被移除，返回 -1 让断言看得出异常。
+   * 走子收尾都会 saveState，所以它等价于「AI 有没有真的走」。
+   */
+  const savedMoves = async () => {
+    const raw = await evalJs(
+      'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+    );
+    const saved = JSON.parse(raw);
+    return saved && typeof saved.moves === 'number' ? saved.moves : -1;
+  };
+  const sheetHidden = (id) => evalJs(`document.getElementById(${JSON.stringify(id)}).hidden`);
+
+  await loadBoard(BOARD_RIGHT_COL, 'classic');
+  await click('#autoplay');
+
+  // 先确认托管真的在走，否则后面的「步数不动」可能只是 AI 从没起来
+  let movesBeforeSheet = 0;
+  for (let i = 0; i < 25 && movesBeforeSheet < 2; i++) {
+    await wait(120);
+    movesBeforeSheet = await savedMoves();
+  }
+  check('托管已经走了两步以上', movesBeforeSheet >= 2, '已走 ' + movesBeforeSheet + ' 步');
+
+  await click('#reviewOpen');
+  await wait(250);
+  check('复盘抽屉已打开', (await sheetHidden('reviewSheet')) === false);
+
+  // 打开的那一刻可能正好在播一步的动画：先等它收尾，再取「冻结」基准
+  await wait(400);
+  const frozenMoves = await savedMoves();
+  await wait(600);
+  const stillMoves = await savedMoves();
+  // 旧实现只 stopCountdown，不暂停托管：已排期的那一步被 isLocked() 挡回后
+  // 回调直接结束、不再排期 —— 步数确实不动，但托管其实已经死了（下一条断言才红）
+  check('抽屉打开期间托管不再走子', stillMoves === frozenMoves, frozenMoves + ' -> ' + stillMoves);
+
+  await press('Escape');
+  await wait(150);
+  check('关闭复盘后托管仍显示「开」', (await autoplayOn()) === true,
+    'aria-pressed=' + (await evalJs('document.getElementById("autoplay").getAttribute("aria-pressed")')));
+
+  // 旧实现：autoplay 仍为 true 但没有任何在途定时器，手不动，1.5s 后步数不会变
+  await wait(1500);
+  const resumedMoves = await savedMoves();
+  check('关闭复盘后 1.5s 内托管继续走子', resumedMoves > stillMoves,
+    stillMoves + ' -> ' + resumedMoves);
+
+  if (await autoplayOn()) {
+    await click('#autoplay');
+    await wait(300);
+  }
+
+  /* ---------- T18 控制台 ---------- */
+  console.log('\n[T18] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
