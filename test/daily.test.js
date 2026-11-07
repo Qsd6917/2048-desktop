@@ -124,6 +124,21 @@ group('recordResult', function () {
   eq('没开过也能记结果，attempts 仍为 0', noAttempt.days['20261108'].attempts, 0);
   eq('没有 result 时至少记一次完成', Daily.recordResult(Daily.emptyStore(), '20261109')
     .days['20261109'].finishes, 1);
+
+  // 「继续挑战」后的二次结算：finishes 不重复，数字推进到本局最终值
+  let continued = Daily.startAttempt(Daily.emptyStore(), '20261110', 1);
+  continued = Daily.recordResult(continued, '20261110',
+    { score: 2048, moves: 5, maxTile: 2048, won: true }, 2);
+  continued = Daily.recordResult(continued, '20261110',
+    { score: 3000, moves: 8, maxTile: 4096, won: true }, 3,
+    { finish: false, movesDelta: 3 });
+
+  eq('二次结算 finishes 仍为 1', continued.days['20261110'].finishes, 1);
+  eq('二次结算 totalMoves 只补增量', continued.days['20261110'].totalMoves, 8);
+  eq('二次结算 bestScore 取最终值', continued.days['20261110'].bestScore, 3000);
+  eq('二次结算 bestMoves 取最终值', continued.days['20261110'].bestMoves, 8);
+  eq('二次结算 bestTile 取最终值', continued.days['20261110'].bestTile, 4096);
+  eq('二次结算 attempts 不动', continued.days['20261110'].attempts, 1);
 });
 
 /* ---------- 4. bestStreak ---------- */

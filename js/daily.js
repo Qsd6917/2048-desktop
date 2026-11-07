@@ -172,19 +172,29 @@
    *   finishes +1、totalMoves += moves，bestScore/bestMoves/bestTile 取 max，
    *   won 取或，lastAt 更新。返回新 store，入参不变。
    *
+   * 「继续挑战」会让同一局结算两次：第二次只更新数字、不再 +finishes，
+   * 且 totalMoves 只补记新增的步数。调用方通过 options 表达这两点：
+   *   options.finish=false     不增加 finishes
+   *   options.movesDelta=n     本次只往 totalMoves 里加 n（默认 = result.moves）
+   * 不传 options 等价于「完整记一次」，与旧调用方完全兼容。
+   *
    * @param {object} store 现有数据
    * @param {string} key 日期键
    * @param {{score:number, moves:number, maxTile:number, won:boolean}} result 本局结果
    * @param {number} now 时间戳
+   * @param {{finish?:boolean, movesDelta?:number}} [options] 二次结算的增量口径
    * @returns {object} 新 store
    */
-  function recordResult(store, key, result, now) {
+  function recordResult(store, key, result, now, options) {
     var next = normalizeStore(store);
     if (!Rng.isDateKey(key)) return next;
 
     var data = result && typeof result === 'object' ? result : {};
+    var opts = options && typeof options === 'object' ? options : {};
+    var countFinish = opts.finish !== false;
     var score = toCount(data.score);
     var moves = toCount(data.moves);
+    var movesDelta = opts.movesDelta === undefined ? moves : toCount(opts.movesDelta);
     var maxTile = toCount(data.maxTile);
 
     var record = next.days[key];
@@ -193,8 +203,8 @@
       next.days[key] = record;
     }
 
-    record.finishes += 1;
-    record.totalMoves += moves;
+    if (countFinish) record.finishes += 1;
+    record.totalMoves += movesDelta;
     if (score > record.bestScore) record.bestScore = score;
     if (moves > record.bestMoves) record.bestMoves = moves;
     if (maxTile > record.bestTile) record.bestTile = maxTile;

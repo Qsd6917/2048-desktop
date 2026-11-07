@@ -110,6 +110,12 @@ group('create（种子随机源）', function () {
   const seriesC = take(c, 5);
   ok('不同 key 前 5 个数不同', str(seriesA.slice(0, 5)) !== str(seriesC));
 
+  // golden：种子的前缀是规格的一部分（'2048-daily-' + 日期键），
+  // 这三个数一旦漂移，所有每日开局都会变，必须让测试先红。
+  eq('golden：带前缀种子的前 3 个数固定',
+    take(Rng.create('2048-daily-20261107'), 3),
+    [0.20320546091534197, 0.1592360173817724, 0.7802721995394677]);
+
   eq('固定种子串可复现', take(Rng.create('2048-daily-20261107'), 3),
     take(Rng.create('2048-daily-20261107'), 3));
 });

@@ -164,8 +164,10 @@
     dailyRng: null,
     /** 已从每日序列取了多少个数，存档后按它快进回同一位置 */
     rngCount: 0,
-    /** 本局每日成绩是否已入账，保证一局只记一次 */
+    /** 本局每日成绩是否已入账（finishes 的一次性闸门） */
     dailyRecorded: false,
+    /** 本局已计入每日 totalMoves 的步数；继续挑战后只补记增量 */
+    dailyRecordedMoves: 0,
     /** 本局是否用过撤销（结果类成就用，暂不落盘） */
     undoUsed: false
   };
@@ -223,6 +225,14 @@
   }
 
   /**
+   * 每日挑战的种子串。
+   * 前缀是规格的一部分，改动会让所有历史种子漂移（测试里有 golden 断言）。
+   */
+  function dailySeed(key) {
+    return '2048-daily-' + key;
+  }
+
+  /**
    * 所有落子随机的唯一入口。
    * 每日局用日期种子序列（并记下取数个数），普通局直接 Math.random。
    */
@@ -244,7 +254,7 @@
       return;
     }
 
-    var rng = Rng.create(state.dailyKey);
+    var rng = Rng.create(dailySeed(state.dailyKey));
     Rng.skip(rng, state.rngCount);
     state.dailyRng = rng.next;
   }
@@ -307,6 +317,7 @@
       state.dailyRng = null;
       state.rngCount = 0;
       state.dailyRecorded = false;
+      state.dailyRecordedMoves = 0;
       setStatus('新的一天 · 今日挑战已刷新');
       saveState();
     }
@@ -408,7 +419,8 @@
       // 才能和没关页面时完全一致；dailyRecorded 则保证一局只记一次成绩。
       daily: state.dailyKey,
       rngCount: state.rngCount,
-      dailyRecorded: state.dailyRecorded
+      dailyRecorded: state.dailyRecorded,
+      dailyRecordedMoves: state.dailyRecordedMoves
     });
   }
 
@@ -448,6 +460,14 @@
     var daily = Rng.isDateKey(data.daily) ? data.daily : null;
     var rngCount = daily ? Math.max(0, Math.floor(Number(data.rngCount) || 0)) : 0;
     var dailyRecorded = !!daily && data.dailyRecorded === true;
+    // 老存档没有 dailyRecordedMoves 时按「当前步数都已入账」处理，
+    // 宁可少补，也不要在继续挑战后把已记过的步数再加一遍。
+    var dailyRecordedMoves = 0;
+    if (dailyRecorded) {
+      dailyRecordedMoves = data.dailyRecordedMoves === undefined
+        ? moves
+        : Math.min(moves, Math.max(0, Math.floor(Number(data.dailyRecordedMoves) || 0)));
+    }
 
     return {
       size: size,
@@ -463,7 +483,8 @@
       recordedMoves: recordedMoves,
       daily: daily,
       rngCount: rngCount,
-      dailyRecorded: dailyRecorded
+      dailyRecorded: dailyRecorded,
+      dailyRecordedMoves: dailyRecordedMoves
     };
   }
 
@@ -545,9 +566,10 @@
    */
   function startDaily() {
     state.dailyKey = todayKey();
-    state.dailyRng = Rng.create(state.dailyKey).next;
+    state.dailyRng = Rng.create(dailySeed(state.dailyKey)).next;
     state.rngCount = 0;
     state.dailyRecorded = false;
+    state.dailyRecordedMoves = 0;
 
     settings.size = 4;
     settings.mode = 'classic';
@@ -585,6 +607,7 @@
     state.recorded = false;
     state.recordedMoves = 0;
     state.dailyRecorded = false;
+    state.dailyRecordedMoves = 0;
     state.undoUsed = false;
     if (!keepDaily) {
       state.dailyKey = null;
@@ -675,19 +698,6 @@
       bucket.games += 1;
       stats.bySize[key] = bucket;
       state.recorded = true;
-
-      // 每日成绩一局只记一次：dailyRecorded 跟着存档走，
-      // 「达标 → 继续挑战 → 关页 → 再结算」不会把同一局记两遍。
-      if (state.dailyKey && state.dailyKey === todayKey() && !state.dailyRecorded) {
-        saveDailyStore(Daily.recordResult(loadDailyStore(), state.dailyKey, {
-          score: state.score,
-          moves: state.moves,
-          maxTile: tile,
-          won: state.won
-        }, Date.now()));
-        state.dailyRecorded = true;
-        renderDailyBar();
-      }
     }
 
     stats.totalMoves += extraMoves;
@@ -700,6 +710,36 @@
     if (sizeBucket && state.score > sizeBucket.bestScore) sizeBucket.bestScore = state.score;
 
     Storage.saveStats(stats);
+
+    // 每日战绩与统计同一时机入账：首次结算记 finish，继续挑战后的每次增量结算
+    // 把本局最新的分数/步数/最大块补进去。
+    recordDailyResult();
+  }
+
+  /**
+   * 每日成绩入账（幂等）。
+   *
+   * finishes 由 state.dailyRecorded 做一次性闸门：一局只 +1；
+   * bestScore / bestMoves / bestTile / totalMoves 则每次结算都推进到本局最新值。
+   * 「继续挑战」后的第二次结算只把新增步数补进 totalMoves，不重复算 finish。
+   */
+  function recordDailyResult() {
+    if (!state.dailyKey || state.dailyKey !== todayKey()) return;
+
+    var movesDelta = Math.max(0, state.moves - state.dailyRecordedMoves);
+    var countFinish = !state.dailyRecorded;
+    if (!countFinish && movesDelta === 0) return;   // 没有新进展，不必写盘
+
+    saveDailyStore(Daily.recordResult(loadDailyStore(), state.dailyKey, {
+      score: state.score,
+      moves: state.moves,
+      maxTile: G.maxValue(state.board),
+      won: state.won
+    }, Date.now(), { finish: countFinish, movesDelta: movesDelta }));
+
+    if (countFinish) state.dailyRecorded = true;
+    state.dailyRecordedMoves = state.moves;
+    renderDailyBar();
   }
 
   /* ---------- 走一步 ---------- */
@@ -1233,6 +1273,7 @@
             state.dailyKey = saved.daily;
             state.rngCount = saved.rngCount;
             state.dailyRecorded = saved.dailyRecorded;
+            state.dailyRecordedMoves = saved.dailyRecordedMoves;
             restoreDailyRng();
           } else {
             // 跨日：盘面照常恢复，只是不再属于今天的挑战
