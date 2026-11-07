@@ -835,8 +835,65 @@ async function main() {
     await wait(300);
   }
 
-  /* ---------- T14 控制台 ---------- */
-  console.log('\n[T14] 控制台');
+  /* ---------- T14 达成目标同时死局 ---------- */
+  console.log('\n[T14] 达成目标那一步同时死局，继续挑战要结算');
+
+  /**
+   * 从渲染层还原当前盘面并问规则层「还能不能走」。
+   * 只用来确认构造出来的确实是死局，不依赖控制器内部状态。
+   */
+  const boardHasMoves = () => evalJs(`(function () {
+    var size = 4;
+    var values = [];
+    for (var r = 0; r < size; r++) {
+      var row = [];
+      for (var c = 0; c < size; c++) row.push(0);
+      values.push(row);
+    }
+    var nodes = document.querySelectorAll('#tileLayer .tile');
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].classList.contains('tile--obstacle')) continue;
+      var r2 = Number(nodes[i].style.getPropertyValue('--y'));
+      var c2 = Number(nodes[i].style.getPropertyValue('--x'));
+      values[r2][c2] = Number(nodes[i].textContent);
+    }
+    return Game2048.hasMoves(Game2048.boardFromValues(values));
+  })()`);
+
+  // 审计报告 C1 的矩阵：向左 1024+1024 -> 2048 之后只剩 (0,3) 一个空格，
+  // 落 2 就满盘无解。Math.random 固定为 0，让落子恒为 2（不赌 90% 概率）。
+  await loadBoard([
+    [1024, 1024, 2, 4],
+    [8, 16, 32, 64],
+    [128, 256, 512, 2],
+    [4, 8, 16, 32]
+  ], 'classic');
+
+  await evalJs('window.__realRandom = Math.random, Math.random = function () { return 0; }, 1');
+  await press('ArrowLeft');
+  await wait(800);
+  await evalJs('Math.random = window.__realRandom, 1');
+
+  check('先弹出达成目标', (await text('#overlayTitle')) === '达成目标', await text('#overlayTitle'));
+  check('这一步之后棋盘确实无解', (await boardHasMoves()) === false);
+
+  await evalJs('document.querySelectorAll("#overlayActions button")[0].click(), 1');   // 继续挑战
+  await wait(400);
+
+  // 旧实现：overlay 被 hideOverlay 关掉、over 复位后不再判死局，标题仍停在「达成目标」，
+  // 棋盘按方向键毫无反应，也永远不会有第二次结算。
+  check('继续挑战后立刻结算为死局', (await text('#overlayTitle')) === '走不动了', await text('#overlayTitle'));
+  check('死局浮层是打开的', (await overlayHidden()) === false);
+  check('死局浮层带撤销入口', await evalJs(`(function () {
+    var btns = document.querySelectorAll('#overlayActions button');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].textContent.trim() === '撤销一步') return true;
+    }
+    return false;
+  })()`));
+
+  /* ---------- T15 控制台 ---------- */
+  console.log('\n[T15] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

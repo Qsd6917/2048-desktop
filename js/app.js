@@ -2104,6 +2104,14 @@
     state.keepPlaying = true;
     state.over = false;
 
+    // 达成目标的那一步可能同时把棋盘走死（满盘 + 无可合并）：
+    // 直接续跑会留下一个「方向键毫无反应」的棋盘，永远不会再结算。
+    // finishGame 开头有 over 守卫，所以必须先复位 over 再进结算。
+    if (!G.hasMoves(state.board)) {
+      finishGame('stuck');
+      return;
+    }
+
     hideOverlay();
     renderHud();
     saveState();
@@ -2126,6 +2134,14 @@
     state.keepPlaying = true;
 
     bankResult('win');
+
+    // 与 continuePlaying 同理：托管走到目标那一步可能同时无解。
+    // 不补这一判，托管只会停在一句「托管结束：无处可走」，over 仍为 false，永不结算。
+    if (!G.hasMoves(state.board)) {
+      finishGame('stuck');
+      return;
+    }
+
     saveState();
 
     setStatus('目标已达成 · 托管继续往上冲');
