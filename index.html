@@ -34,8 +34,9 @@
         <span class="hud-label">最大</span>
         <span class="hud-value" id="maxTile"></span>
       </div>
-      <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素；aria-label 让读屏也知道这是剩余时间 -->
-      <div class="hud-item hud-timer" id="timer" aria-label="剩余时间" hidden></div>
+      <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素。
+           role="timer" 让 aria-label 真的成为可访问名（它默认 aria-live=off，不会每 200ms 播报） -->
+      <div class="hud-item hud-timer" id="timer" role="timer" aria-label="剩余时间" hidden></div>
     </div>
 
     <!-- 每日挑战条：同一天的种子固定，刷新可续；默认隐藏，由控制器决定展示 -->

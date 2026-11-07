@@ -292,8 +292,6 @@
    * 按钮状态才和 AI 的实际行为一致。
    */
   var autoplayPausedBySheet = false;
-  /** 抽屉打开顺序（只存 'review' / 'ach'）：Esc 关栈顶 */
-  var sheetStack = [];
 
   /** 动画期间缓冲的玩家方向：最多一格，只保留最后一次按键（不进撤销语义） */
   var pendingDir = null;
@@ -948,16 +946,20 @@
     '</div>';
   }
 
-  /* ---------- 抽屉的公共行为：互斥、栈、计时与托管的暂停恢复 ---------- */
+  /* ---------- 抽屉的公共行为：互斥、计时与托管的暂停恢复 ---------- */
 
-  /** 记下抽屉的打开顺序（重复打开不重复入栈） */
-  function pushSheet(id) {
-    if (sheetStack.indexOf(id) < 0) sheetStack.push(id);
-  }
-
-  function removeSheet(id) {
-    var index = sheetStack.indexOf(id);
-    if (index >= 0) sheetStack.splice(index, 1);
+  /**
+   * 当前打开的抽屉 id；没有打开时返回 null。
+   *
+   * 刻意以 DOM 的 hidden 为准（isReviewOpen / isAchOpen），不另存一份「打开顺序」的影子状态：
+   * 两个抽屉互斥，任何时刻最多一个开着，所以「栈顶」= 唯一开着的那个。
+   * 影子状态要靠每个打开/关闭路径成对维护，漏一处就会让键盘判断永久错位（Esc 关不掉、
+   * 方向键失效），而 DOM 是唯一事实来源，不会跑到别处去。
+   */
+  function openSheetId() {
+    if (isAchOpen()) return 'ach';
+    if (isReviewOpen()) return 'review';
+    return null;
   }
 
   /** 抽屉打开：正在托管的话先暂停并记住，关闭时才知道要不要恢复 */
@@ -997,7 +999,6 @@
     var keepPaused = !!options && options.keepPaused === true;
 
     sheet.hidden = true;
-    removeSheet(id);
     // 背景滚动锁属于「还有抽屉开着」：两个抽屉互斥，这里总能正确解除
     if (!isReviewOpen() && !isAchOpen()) document.body.classList.remove('is-sheet-open');
 
@@ -1047,7 +1048,6 @@
       renderReviewError();
     } finally {
       els.reviewSheet.hidden = false;
-      pushSheet('review');
       document.body.classList.add('is-sheet-open');
       if (els.reviewClose) els.reviewClose.focus();
     }
@@ -1133,6 +1133,14 @@
       '<div class="ach-grid">' + cards.join('') + '</div>';
   }
 
+  /** 渲染失败时的兜底内容：面板照常打开，玩家能关掉它，计时与托管就会恢复 */
+  function renderAchError() {
+    if (!els.achBody) return;
+    els.achBody.innerHTML = '<div class="ach-summary">' +
+      '<span class="ach-summary__count">成就数据读不出来，关掉面板再试试</span>' +
+    '</div>';
+  }
+
   function openAchievements() {
     if (!els.achSheet) return;
 
@@ -1147,11 +1155,18 @@
     pauseAutoplayForSheet();   // 与复盘一致：面板开着时托管暂停，关闭后再恢复
     stopCountdown();           // 与复盘一致：面板开着时不计时，避免背面被判超时
     achReturnFocus = inherited || document.activeElement;
-    renderAchSheet();
-    els.achSheet.hidden = false;
-    pushSheet('ach');
-    document.body.classList.add('is-sheet-open');
-    if (els.achClose) els.achClose.focus();
+    try {
+      renderAchSheet();
+    } catch (err) {
+      // 与 openReview 同理：时钟已经停了、托管也暂停了，这里再抛出去抽屉就不会打开，
+      // closeSheet 永远不会被调用 —— 倒计时永久停住、暂停标志卡在 true。
+      // 宁可显示一句兜底，也要让抽屉开得出来、关得掉。
+      renderAchError();
+    } finally {
+      els.achSheet.hidden = false;
+      document.body.classList.add('is-sheet-open');
+      if (els.achClose) els.achClose.focus();
+    }
   }
 
   function closeAchievements() {
@@ -2097,6 +2112,9 @@
     var snapshot = state.history.pop();
 
     disableAutoplay();
+    // 撤销等于玩家接管：连「被抽屉暂停」的记忆一起作废，
+    // 否则之后关掉抽屉会按那条记忆把托管又拉起来，玩家撤销完还得再关一次。
+    autoplayPausedBySheet = false;
     stopCountdown();
     state.undoUsed = true;
     state.session += 1;   // 作废在途动画回调
@@ -2402,14 +2420,15 @@
     var key = (event.key || '').toLowerCase();
 
     // 抽屉开着时只认 Esc 与 Tab：方向键、R、撤销都等关掉之后再起作用。
-    // Esc 关栈顶（后打开的那个），不再写死「先判复盘」。
-    if (sheetStack.length) {
-      var topId = sheetStack[sheetStack.length - 1];
+    // 目标按 DOM 推导（两个抽屉互斥，最多一个开着），不再维护「后打开的」栈：
+    // 少一份影子状态，就不会出现「栈和实际可见的抽屉错位、键盘永久失效」。
+    var sheetId = openSheetId();
+    if (sheetId) {
       if (key === 'escape') {
         event.preventDefault();
-        closeSheet(topId);
+        closeSheet(sheetId);
       } else if (key === 'tab') {
-        if (trapFocus(topId === 'ach' ? els.achSheet : els.reviewSheet, event)) {
+        if (trapFocus(sheetId === 'ach' ? els.achSheet : els.reviewSheet, event)) {
           event.preventDefault();
         }
       }
