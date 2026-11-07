@@ -360,6 +360,17 @@ group('时间预算真的能生效', () => {
   ok('宽容预算下正常返回', big !== null && DIRS.indexOf(big.dir) !== -1, '实际 ' + str(big));
   ok('不超过预算太多（< 500ms）', costBig < 500, '实际 ' + costBig + 'ms');
   ok('预算越充足搜索越深或持平', big.depth >= tiny.depth, '200ms 深度 ' + big.depth + ' / 1ms 深度 ' + tiny.depth);
+
+  /*
+   * 上面那条「越充足越深」在「完全忽略预算」的实现上也会通过（深度恒定）。
+   * 预算 0 必须连第一层都开不了，直接回退到静态评估的 depth 0 —— 这条才真正防回归。
+   */
+  const zero = AI.suggest(bd, { timeBudgetMs: 0 });
+  ok('预算 0 时退回静态评估（depth === 0）', zero !== null && zero.depth === 0,
+    '实际 ' + str(zero && zero.depth));
+  ok('预算 0 仍返回能推动棋盘的合法方向',
+    zero !== null && DIRS.indexOf(zero.dir) !== -1 && moveChanges(MID_4, zero.dir),
+    '实际 ' + str(zero));
 });
 
 group('三种尺寸都能跑', () => {

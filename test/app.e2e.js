@@ -6,9 +6,11 @@
  *   2. 「继续挑战」之后的第二次结算按增量补记统计（games 不重复加）；
  *   3. goalValue() 不再用 WIN_VALUE 兜底（4/5/6 各自 2048/4096/8192）。
  *
- * 用法：node test/app.e2e.js
- * 需要本机有 Chrome（或 Edge）；找不到时打印 SKIP 并以 0 退出，
- * 这样纯逻辑测试环境不会被浏览器依赖卡住。可用 CHROME_PATH 指定浏览器。
+ * 用法：node test/app.e2e.js [--allow-skip]
+ * 需要本机有 Chrome（或 Edge），可用 CHROME_PATH 指定。
+ * 找不到浏览器（或 Node 版本不够）时默认**以非零码退出**：CI 上宁可红，
+ * 也不能出现「通过但一条断言都没跑」。确实需要在无浏览器机器上跳过时，
+ * 显式加 --allow-skip，输出会写明这一轮没有覆盖任何用例。
  */
 'use strict';
 
@@ -16,6 +18,8 @@ const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+
+const ALLOW_SKIP = process.argv.indexOf('--allow-skip') >= 0;
 
 const PAGE = 'file:///' + path.join(__dirname, '..', 'index.html').replace(/\\/g, '/');
 const PORT = 9300 + (process.pid % 200);
@@ -79,14 +83,28 @@ function findChrome() {
   return null;
 }
 
+/**
+ * 跳过：默认算失败。
+ * @param {string} reason 为什么跳过
+ */
+function skip(reason) {
+  console.log('SKIP 端到端回归：' + reason);
+  if (ALLOW_SKIP) {
+    console.log('（--allow-skip 已开启，按通过处理 —— 注意这一轮一条断言都没跑）');
+    return;
+  }
+  console.log('（默认把 SKIP 视为失败，避免 CI 上「绿着但没测」；确需跳过请显式加 --allow-skip）');
+  process.exitCode = 3;
+}
+
 async function main() {
   const chromePath = findChrome();
   if (!chromePath) {
-    console.log('SKIP 端到端回归：本机没有找到 Chrome / Edge（可设 CHROME_PATH 指定）');
+    skip('本机没有找到 Chrome / Edge（可设 CHROME_PATH 指定）');
     return;
   }
   if (typeof WebSocket !== 'function') {
-    console.log('SKIP 端到端回归：当前 Node 没有全局 WebSocket（需 Node 22+）');
+    skip('当前 Node 没有全局 WebSocket（需 Node 22+）');
     return;
   }
 
@@ -322,22 +340,139 @@ async function main() {
     bestText + ' vs ' + afterEnd.bestScore);
   check('刷新后「最高」不低于本局最终分', bestText >= finalScore, bestText + ' >= ' + finalScore);
 
-  /* ---------- T5 目标值不靠 WIN_VALUE 兜底 ---------- */
-  console.log('\n[T5] 三尺寸目标值');
+  /* ---------- T5 入账幂等跨刷新 ---------- */
+  /* 「达成目标 → 继续挑战 → 关页 → 重开 → 再结算」只能算一局、步数不能重复计 */
+  console.log('\n[T5] 达成目标后刷新再结算，统计不重复');
+
+  const beforeIdem = await stats();
+  await loadBoard(BOARD_WIN_IN_ONE, 'timed');
+  await press('ArrowLeft');
+  await wait(700);
+  const idemWin = await stats();
+  check('这一局胜利记了一局', idemWin.games === beforeIdem.games + 1,
+    beforeIdem.games + ' -> ' + idemWin.games);
+
+  await evalJs('document.querySelectorAll("#overlayActions button")[0].click(), 1');   // 继续挑战
+  await wait(300);
+  await press('ArrowDown');
+  await wait(600);
+
+  const savedSnapshot = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state, null))'
+  ));
+  check('存档里带上了 recorded 标记', Boolean(savedSnapshot) && savedSnapshot.recorded === true,
+    JSON.stringify(savedSnapshot && { recorded: savedSnapshot.recorded, moves: savedSnapshot.moves }));
+  check('recordedMoves 停在达成目标时的步数（不再随局面归零）',
+    Boolean(savedSnapshot) && savedSnapshot.recordedMoves === 1 && savedSnapshot.moves >= 1,
+    JSON.stringify(savedSnapshot && { recordedMoves: savedSnapshot.recordedMoves, moves: savedSnapshot.moves }));
+
+  await reload();   // 模拟「关页面再打开」
+
+  check('刷新后仍从上一局继续（浮层未弹）', (await overlayHidden()) === true);
+
+  await evalJs(`(function () {
+    window.__realNow2 = Date.now.bind(Date);
+    var t0 = window.__realNow2();
+    Date.now = function () { return t0 + (window.__realNow2() - t0) * 300; };
+    return 1;
+  })()`);
+  await wait(1600);
+  await evalJs('Date.now = window.__realNow2, 1');
+
+  check('刷新后超时能正常结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+
+  const idemSummary = (await text('#overlayText')) || '';
+  const idemMoves = /走了 (\d+) 步/.exec(idemSummary);
+  const idemFinalMoves = idemMoves ? Number(idemMoves[1]) : -1;
+  const afterIdem = await stats();
+
+  check('刷新后再结算，games 不再 +1', afterIdem.games === beforeIdem.games + 1,
+    beforeIdem.games + ' -> ' + afterIdem.games);
+  check('刷新后再结算，totalMoves 只补记增量',
+    afterIdem.totalMoves === beforeIdem.totalMoves + idemFinalMoves,
+    beforeIdem.totalMoves + ' + ' + idemFinalMoves + ' -> ' + afterIdem.totalMoves);
+
+  /* ---------- T6 三尺寸目标值 / aria-label / 换尺寸关托管 ---------- */
+  console.log('\n[T6] 三尺寸目标值与无障碍标签');
   await click('#modeGroup [data-mode="classic"]');
   await wait(400);
 
   const goals = [];
+  const labels = [];
   const sizes = [4, 5, 6];
   for (let i = 0; i < sizes.length; i++) {
     await click('#sizeGroup [data-size="' + sizes[i] + '"]');
     await wait(400);
     goals.push(await text('#goal'));
+    labels.push(await evalJs('document.getElementById("board").getAttribute("aria-label")'));
   }
   check('4/5/6 目标值 2048/4096/8192', goals.join('/') === '2048/4096/8192', goals.join('/'));
+  check('aria-label 跟着尺寸走', labels.join('/') === '4×4 棋盘/5×5 棋盘/6×6 棋盘', labels.join('/'));
 
-  /* ---------- T6 控制台 ---------- */
-  console.log('\n[T6] 控制台');
+  await click('#autoplay');
+  await wait(60);
+  const autoplayBefore = await autoplayOn();
+  await click('#sizeGroup [data-size="4"]');
+  await wait(250);
+  check('换尺寸时托管自动关闭', autoplayBefore === true && (await autoplayOn()) === false,
+    '切换前 ' + autoplayBefore + ' / 切换后 ' + (await autoplayOn()));
+
+  /* ---------- T7 存档覆盖设置后必须落盘 ---------- */
+  console.log('\n[T7] 存档里的尺寸/模式要写回设置');
+
+  await evalJs(`(function () {
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'classic', sound: false });
+    var values = [];
+    for (var r = 0; r < 6; r++) {
+      var row = [];
+      for (var c = 0; c < 6; c++) row.push(r === 0 && c === 0 ? 2 : 0);
+      values.push(row);
+    }
+    Game2048Storage.set(Game2048Storage.KEYS.state, {
+      version: 2, size: 6, mode: 'obstacle', values: values,
+      score: 0, won: false, keepPlaying: false, remainingMs: 0, obstaclesAdded: 0, moves: 0
+    });
+    return 1;
+  })()`);
+  await reload();
+  check('存档里的 6×6 被还原',
+    (await text('#goal')) === '8192' &&
+    (await evalJs('document.getElementById("board").getAttribute("aria-label")')) === '6×6 棋盘',
+    await text('#goal'));
+
+  const savedSettings = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.settings, null))'
+  ));
+  check('存档覆盖后的设置已经落盘',
+    Boolean(savedSettings) && savedSettings.size === 6 && savedSettings.mode === 'obstacle',
+    JSON.stringify(savedSettings));
+
+  await evalJs('Game2048Storage.remove(Game2048Storage.KEYS.state), 1');
+  await reload();
+  check('存档被移除后仍停在 6×6/障碍', (await text('#goal')) === '8192', await text('#goal'));
+
+  /* ---------- T8 00:00 仍是紧急态 ---------- */
+  console.log('\n[T8] 倒计时归零的样式');
+
+  await loadBoard(BOARD_RIGHT_COL, 'timed');
+  await evalJs(`(function () {
+    window.__realNow3 = Date.now.bind(Date);
+    var t0 = window.__realNow3();
+    Date.now = function () { return t0 + (window.__realNow3() - t0) * 400; };
+    return 1;
+  })()`);
+  await wait(1400);
+  await evalJs('Date.now = window.__realNow3, 1');
+
+  const timeUpTitle = await text('#overlayTitle');
+  const clockText = await text('#timer');
+  const clockUrgent = await evalJs('document.getElementById("timer").classList.contains("is-urgent")');
+  check('时间到', timeUpTitle === '时间到', timeUpTitle);
+  check('00:00 保留 is-urgent 紧急样式', clockText === '00:00' && clockUrgent === true,
+    clockText + ' / urgent=' + clockUrgent);
+
+  /* ---------- T9 控制台 ---------- */
+  console.log('\n[T9] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

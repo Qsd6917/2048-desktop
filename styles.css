@@ -181,12 +181,13 @@ body {
  */
 .hud-gain {
   position: absolute;
-  top: 5px;
+  /* 只贴住标签行：加阴影或再往下 1px，覆盖区就会越过 24px 压到得分数字顶上 */
+  top: 4px;
   left: 50%;
   padding: 1px 5px;
   border-radius: 6px;
   background: var(--paper-hi);
-  box-shadow: 0 0 0 3px var(--paper-hi);
+  box-shadow: none;
   font-size: 11px;
   font-weight: 800;
   line-height: 1.3;

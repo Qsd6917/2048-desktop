@@ -4,6 +4,8 @@
  * 设计要点：
  *   - file:// 或隐私模式下 localStorage 可能整体不可用（连访问属性都抛异常），
  *     这里探测一次后降级成内存对象，游戏照常能玩，只是刷新后不保留；
+ *   - 探测通过不代表一直写得进去（配额满、策略收紧）：set 失败时同样降级到内存
+ *     并重写一次，绝不出现「界面说存了、刷新后没了」；
  *   - 键名统一加 `game2048.v2.` 前缀，和旧版 `game2048.state` / `game2048.best` 彻底隔离；
  *   - 值一律走 JSON，读到坏数据（手改、旧格式、截断）时返回调用方给的 fallback，
  *     绝不让异常冒到控制器里。
@@ -52,6 +54,30 @@
     };
   }
 
+  /**
+   * 切换到内存后备。
+   *
+   * 切换前先把旧后端里还能读到的已知键（含全前缀）搬进内存：
+   * 典型场景是「探测时写得进去、玩到一半配额满」——若直接换空内存，
+   * 界面上的历史统计会当场归零，比存不进去更吓人。
+   */
+  function degradeToMemory() {
+    var previous = backend;
+    var next = createMemoryBackend();
+    if (previous) {
+      Object.keys(KEYS).forEach(function (name) {
+        var fullKey = PREFIX + KEYS[name];
+        try {
+          var raw = previous.getItem(fullKey);
+          if (raw !== null && raw !== undefined) memory[fullKey] = String(raw);
+        } catch (e) {
+          /* 旧后端已经连读都读不了，那就只能放弃这部分数据 */
+        }
+      });
+    }
+    backend = next;
+  }
+
   /** 探测一次就缓存结果，避免每次读写都踩异常 */
   function getBackend() {
     if (backend) return backend;
@@ -91,8 +117,13 @@
   }
 
   /**
-   * 写一个 JSON 值。写失败（配额满 / 禁用）时静默吞掉。
-   * @returns {boolean} 是否真的写成功（内存降级也算成功）
+   * 写一个 JSON 值。
+   *
+   * 探测阶段能写、真写时却失败（配额满 / 隐私策略收紧 / 无痕配额为 0）时，
+   * 必须降级到内存并立刻重写一次 —— 否则界面显示「已保存」，刷新后却什么都没了。
+   * 降级后的写入算成功（本次会话内读得到），真正的持久化失败调用方无法补救。
+   *
+   * @returns {boolean} 是否写成功（内存降级也算成功）
    */
   function set(key, value) {
     var payload;
@@ -103,10 +134,18 @@
     }
     if (payload === undefined) return false;
 
+    var fullKey = PREFIX + key;
     try {
-      getBackend().setItem(PREFIX + key, payload);
+      getBackend().setItem(fullKey, payload);
       return true;
     } catch (e) {
+      degradeToMemory();
+    }
+
+    try {
+      getBackend().setItem(fullKey, payload);
+      return true;
+    } catch (e2) {
       return false;
     }
   }

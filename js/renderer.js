@@ -113,8 +113,10 @@
       node.inner.classList.toggle('len2', tile.value < 100);
       node.inner.classList.toggle('len3', tile.value >= 100 && tile.value < 1000);
       node.inner.classList.toggle('len4', tile.value >= 1000);
-      // 超越目标才走深色：目标值随尺寸变（4→2048 / 5→4096 / 6→8192）
-      var goal = G.GOAL_BY_SIZE[size] || G.WIN_VALUE;
+      // 超越目标才走深色：目标值随尺寸变（4→2048 / 5→4096 / 6→8192）。
+      // 这里刻意不用 WIN_VALUE 兜底（恒为 2048，只对 4×4 成立）：
+      // 缺配置就让 setSize 提前抛错，而不是把 5×5 的方块染错色。
+      var goal = G.GOAL_BY_SIZE[size];
       node.inner.classList.toggle('is-super', tile.value > goal);
     }
 
@@ -211,10 +213,21 @@
       // 清空 DOM 不等于障碍是新出现的。
     }
 
-    /** 换尺寸：重建底层网格、清空所有方块，然后重算布局 */
+    /**
+     * 换尺寸：重建底层网格、清空所有方块，然后重算布局。
+     *
+     * 只接受 logic.js 支持的 4/5/6：以前 setSize(3) 会安安静静画出 9 格、
+     * 再用 undefined 当目标值算 is-super，这种配置错误必须在入口就炸掉。
+     */
     function setSize(nextSize) {
       var value = Math.floor(Number(nextSize));
-      if (!(value > 0)) value = DEFAULT_SIZE;
+      if (!(G.SIZES.indexOf(value) >= 0)) {
+        throw new Error('不支持的棋盘尺寸: ' + nextSize + '（仅支持 ' + G.SIZES.join('/') + '）');
+      }
+      if (!(G.GOAL_BY_SIZE[value] > 0)) {
+        throw new Error('Game2048.GOAL_BY_SIZE 缺少尺寸 ' + value + ' 的目标值');
+      }
+
       size = value;
       boardEl.style.setProperty('--size', String(size));
 

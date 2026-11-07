@@ -221,7 +221,8 @@
     var ms = Math.max(0, Math.round(state.remainingMs));
     els.timer.hidden = false;
     els.timer.textContent = formatClock(ms);
-    els.timer.classList.toggle('is-urgent', ms > 0 && ms <= URGENT_MS);
+    // 归零的那一刻（00:00）仍要保持紧急样式：那时才是真正最该被看见的状态
+    els.timer.classList.toggle('is-urgent', ms <= URGENT_MS);
   }
 
   /** 把当前设置同步到按钮的视觉与 aria 状态 */
@@ -280,8 +281,20 @@
       keepPlaying: state.keepPlaying,
       remainingMs: Math.round(state.remainingMs),
       obstaclesAdded: state.obstaclesAdded,
-      moves: state.moves
+      moves: state.moves,
+      // 入账幂等标记必须跟着局面一起存：否则「达成目标 → 继续挑战 → 关页 → 重开」
+      // 之后 recorded 归零，再结算一次就会把同一局的 games 再加一遍。
+      recorded: state.recorded,
+      recordedMoves: state.recordedMoves
     });
+  }
+
+  /** 存档里的一格只能是：null/0 空格、-1 障碍、2 的正整数次幂方块 */
+  function isValidCell(value) {
+    if (value === null || value === 0 || value === -1) return true;
+    if (typeof value !== 'number' || !isFinite(value) || value < 2) return false;
+    var exponent = Math.log2(value);
+    return exponent === Math.floor(exponent) && exponent <= 30;
   }
 
   /** 读档并校验形状；任何一处不合法就整份丢弃（宁可从新局开始，也不要白屏） */
@@ -297,12 +310,30 @@
     if (!Array.isArray(values) || values.length !== size) return null;
     for (var r = 0; r < size; r++) {
       if (!Array.isArray(values[r]) || values[r].length !== size) return null;
+      // 合法 JSON 也可能装着脏数据（手改 / 别的脚本写坏），逐格校验，
+      // 否则 boardFromValues 会造出 value 为字符串的方块，之后合并全变 NaN
+      for (var c = 0; c < size; c++) {
+        if (!isValidCell(values[r][c])) return null;
+      }
     }
 
     var limit = MODES[data.mode].timeLimitMs;
     var remaining = Math.max(0, Math.floor(Number(data.remainingMs) || 0));
     if (limit > 0) remaining = Math.min(remaining, limit);
     else remaining = 0;
+
+    var moves = Math.max(0, Math.floor(Number(data.moves) || 0));
+    var recorded = data.recorded === true;
+    var recordedMoves = Math.max(0, Math.floor(Number(data.recordedMoves) || 0));
+
+    if (typeof data.recorded !== 'boolean') {
+      // 早期 v2 存档没有入账标记：won 为 true 说明「达成目标」时已经记过一局，
+      // 这里保守地把已有步数当成已入账 —— 宁可少记，也不要把同一局算两次。
+      recorded = data.won === true;
+      recordedMoves = recorded ? moves : 0;
+    }
+    if (!recorded) recordedMoves = 0;
+    if (recordedMoves > moves) recordedMoves = moves;
 
     return {
       size: size,
@@ -313,7 +344,9 @@
       keepPlaying: Boolean(data.keepPlaying),
       remainingMs: remaining,
       obstaclesAdded: Math.max(0, Math.floor(Number(data.obstaclesAdded) || 0)),
-      moves: Math.max(0, Math.floor(Number(data.moves) || 0))
+      moves: moves,
+      recorded: recorded,
+      recordedMoves: recordedMoves
     };
   }
 
@@ -757,12 +790,20 @@
     els.overlay.classList.toggle('is-lose', tone === 'lose');
     els.overlay.hidden = false;
 
+    // 结算浮层是唯一的强提示：读屏用户如果不把焦点送进去，根本不知道这一局结束了
+    var primary = els.overlayActions.querySelector('.btn--primary') ||
+      els.overlayActions.querySelector('button');
+    if (primary) primary.focus();
+
     // 浮层挡着棋盘时不给倒计时扣时间，玩家可以慢慢想
     stopCountdown();
   }
 
   function hideOverlay() {
+    // 焦点在浮层里的话，关掉后要还给棋盘，键盘玩家不必再 Tab 一遍
+    var hadFocus = els.overlay.contains(document.activeElement);
     els.overlay.hidden = true;
+    if (hadFocus && els.board) els.board.focus();
   }
 
   /** 通用按钮组：再来一局必给；有历史才给撤销 */
@@ -826,6 +867,10 @@
   /* ---------- 设置切换 ---------- */
 
   function applySettingsChange() {
+    // 换尺寸/换模式等于换一局：托管必须先关掉。
+    // 只清定时器是不够的 —— autoplay 还是 true，startNewGame 一收尾就会重新排期，
+    // 玩家切到 5×5 会立刻被 AI 接管。
+    disableAutoplay();
     persistSettings();
     Audio.setEnabled(settings.sound);
     syncControls();
@@ -963,6 +1008,9 @@
       // 存档比设置更权威：它记录的才是真正在玩的局面
       settings.size = saved.size;
       settings.mode = saved.mode;
+      // 尺寸/模式被存档改写后立刻落盘：否则这份存档一旦被移除（结算 / 清缓存），
+      // 下次启动会退回改之前的旧设置，玩家会莫名其妙回到上一个尺寸
+      persistSettings();
 
       state.board = G.boardFromValues(saved.values);
       // 死局、或者限时局的表已经走完，都不值得续存：直接开新的一局
@@ -976,6 +1024,9 @@
         state.remainingMs = saved.remainingMs;
         state.obstaclesAdded = saved.obstaclesAdded;
         state.moves = saved.moves;
+        // 入账标记跟着局面一起还原，保证同一局永远只记一次
+        state.recorded = saved.recorded;
+        state.recordedMoves = saved.recordedMoves;
       }
     }
 
