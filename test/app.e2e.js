@@ -1512,6 +1512,8 @@ async function main() {
   check('双人下撤销按钮禁用', await evalJs('document.getElementById("undo").disabled'));
   check('双人下托管按钮禁用', await evalJs('document.getElementById("autoplay").disabled'));
   check('双人下计时器隐藏', await evalJs('document.getElementById("timer").hidden'));
+  check('双人下「最高」块也隐藏（个人最高与合计分不可比）',
+    await evalJs('document.getElementById("bestBox").hidden'));
 
   // 两行各有一对 2+2：一步左移合计 8 分，正好验证「一步多次合并全归当前玩家」
   const BOARD_DUEL_PAIRS = [
@@ -1556,7 +1558,40 @@ async function main() {
   check('刷新后回合保持为玩家 1', (await text('#turnLabel')) === '轮到玩家 1',
     await text('#turnLabel'));
 
-  // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
+  // 动画期连按：双人不缓冲。旧实现会把第二下留到换人之后，以玩家 2 的身份走掉并记分
+  // （沿用 T1 的连打写法：30ms 间隔，远小于约 285ms 的动画窗口）。
+  await loadBoard(BOARD_DUEL_PAIRS, 'duel', { players: [0, 0], turn: 0 });
+  await withFixedRandom(async () => {
+    await press('ArrowLeft');
+    await wait(30);
+    await press('ArrowDown');   // 会被丢掉：这一下仍在玩家 1 的动画期
+    await wait(900);
+  });
+  const duelRapid = JSON.parse(await evalJs(
+    'JSON.stringify(Game2048Storage.get(Game2048Storage.KEYS.state))'));
+  check('双人动画期连按只走一步', Boolean(duelRapid) && duelRapid.moves === 1,
+    duelRapid ? 'moves=' + duelRapid.moves : 'null');
+  check('双人动画期连按不会记到对手账上',
+    Boolean(duelRapid) && JSON.stringify(duelRapid.players) === '[8,0]',
+    duelRapid ? 'players=' + JSON.stringify(duelRapid.players) : 'null');
+  check('双人动画期连按后仍轮到玩家 2', (await text('#turnLabel')) === '轮到玩家 2',
+    await text('#turnLabel'));
+
+  // 返程：切回经典，双人的分块与回合条收起，按钮恢复可用（新模型最容易坏的方向）
+  await withFixedRandom(async () => {
+    await click('#modeGroup [data-mode="classic"]');
+    await wait(600);
+    await press('ArrowLeft');   // 新局先走一步，撤销才有内容
+    await wait(900);
+  });
+  check('切回经典后总分块恢复可见', await evalJs('!document.getElementById("scoreBox").hidden'));
+  check('切回经典后「最高」恢复可见', await evalJs('!document.getElementById("bestBox").hidden'));
+  check('切回经典后两个玩家分块收起', await evalJs(
+    'document.getElementById("p1Block").hidden && document.getElementById("p2Block").hidden'));
+  check('切回经典后回合条收起', await evalJs('document.getElementById("duelBar").hidden'));
+  check('切回经典后托管按钮可用', await evalJs('!document.getElementById("autoplay").disabled'));
+  check('切回经典后撤销按钮可用', await evalJs('!document.getElementById("undo").disabled'));
+
   // 死局：一步左移把唯一的空格补满，盘面变成无合并的棋盘，按比分判胜负
   const BOARD_DUEL_STUCK = [
     [2, 4, 2, 4],
@@ -1583,6 +1618,7 @@ async function main() {
   check('双人死局同分判平局', (await text('#overlayTitle')) === '平局', await text('#overlayTitle'));
 
   // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
+  // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
   const statsBeforeDuelWin = await stats();
   await loadBoard([
     [1024, 1024, 0, 0],
@@ -1595,6 +1631,8 @@ async function main() {
   check('双人达成目标浮层打开', (await overlayHidden()) === false);
   check('标题写「玩家 2 达成目标」（刚走完这一步的人获胜）',
     (await text('#overlayTitle')) === '玩家 2 达成目标', await text('#overlayTitle'));
+  check('结算后回合条不再显示轮次',
+    (await text('#turnLabel')) === '本局结束', await text('#turnLabel'));
   check('双人结算不给「继续挑战」', await evalJs(`(function () {
     var buttons = document.querySelectorAll('#overlayActions button');
     for (var i = 0; i < buttons.length; i++) {

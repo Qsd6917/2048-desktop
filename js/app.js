@@ -115,6 +115,7 @@
     tiles: document.getElementById('tileLayer'),
     score: document.getElementById('score'),
     scoreBox: document.getElementById('scoreBox'),
+    bestBox: document.getElementById('bestBox'),
     // 双人：两个玩家分数块与回合条；非双人模式整块隐藏
     p1Block: document.getElementById('p1Block'),
     p2Block: document.getElementById('p2Block'),
@@ -1412,7 +1413,8 @@
     els.best.textContent = String(Math.max(stats.bestScore, state.score));
     els.goal.textContent = String(goalValue());
     els.maxTile.textContent = String(maxTile);
-    els.undo.disabled = state.history.length === 0;
+    // 双人没有撤销栈，这里也要知道模式：只按 history 判断会在双人下留一个可点的撤销。
+    els.undo.disabled = isDuel() || state.history.length === 0;
     els.board.setAttribute('aria-label', settings.size + '×' + settings.size + ' 棋盘');
     renderDuelHud(duel);
     renderStage(maxTile);
@@ -1427,20 +1429,26 @@
    */
   function renderDuelHud(duel) {
     if (els.scoreBox) els.scoreBox.hidden = duel;
+    // 「最高」是个人历史最高与两人合计分的 max，双人下读不出任何有用结论，整格收起
+    if (els.bestBox) els.bestBox.hidden = duel;
 
     if (els.p1Block && els.p2Block && els.p1Score && els.p2Score) {
       els.p1Block.hidden = !duel;
       els.p2Block.hidden = !duel;
       els.p1Score.textContent = String(playerScore(0));
       els.p2Score.textContent = String(playerScore(1));
-      // 当前走子的一方加底色：两人共用一块棋盘，最容易混的就是「该谁了」
-      els.p1Block.classList.toggle('is-active', duel && state.turn === 0);
-      els.p2Block.classList.toggle('is-active', duel && state.turn === 1);
+      // 当前走子的一方加底色：两人共用一块棋盘，最容易混的就是「该谁了」；
+      // 结算之后没有「该谁」，谁都不高亮。
+      els.p1Block.classList.toggle('is-active', duel && !state.over && state.turn === 0);
+      els.p2Block.classList.toggle('is-active', duel && !state.over && state.turn === 1);
     }
 
     if (els.duelBar && els.turnLabel) {
       els.duelBar.hidden = !duel;
-      els.turnLabel.textContent = duel ? '轮到玩家 ' + (state.turn + 1) : '';
+      // 结算后不能再写「轮到玩家 N」—— 浮层标题可能正是「玩家 N 达成目标」，同屏自相矛盾
+      if (!duel) els.turnLabel.textContent = '';
+      else if (state.over) els.turnLabel.textContent = '本局结束';
+      else els.turnLabel.textContent = '轮到玩家 ' + (state.turn + 1);
     }
   }
 
@@ -2168,6 +2176,11 @@
     if (state.over || !els.overlay.hidden) return false;   // 已结算 / 浮层挡着：不接受也不缓冲
 
     if (state.busy) {
+      // 双人：缓冲的这一格会活到 finishTurn 末尾，而换人发生在它之前 ——
+      // 玩家 1 在动画里按的方向会以玩家 2 的身份走一步、分也记给玩家 2。
+      // 所以双人下不缓冲，直接丢掉这一次按键。调用方都只看「这一步有没有走成」，
+      // 不写状态行，连按也不会刷屏，只是多出来的那几下不生效。
+      if (isDuel()) return false;
       pendingDir = dir;
       return false;
     }
@@ -2235,6 +2248,9 @@
     // 双人：换人放在判胜与死局之后 —— 这一手若已分出胜负，turn 保持为胜者；
     // 正常续走才轮到对手。renderHud 要再刷一次，回合标签与高亮才跟得上。
     if (isDuel()) {
+      // 换人前清掉缓冲：与 undo() 同语义，任何路径留下的上一人意图都不该带到下一回合。
+      // 双人下 queueMove 已经拒绝缓冲，这里是第二道保险。
+      pendingDir = null;
       state.turn = Duel.nextTurn(state.turn);
       renderHud();
     }
