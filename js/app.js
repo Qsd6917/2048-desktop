@@ -470,7 +470,15 @@
     if (!evalQueue.length) return;
 
     processEvalEntry(evalQueue.shift());
-    if (evalQueue.length) scheduleEval();
+    if (evalQueue.length) {
+      scheduleEval();
+      return;
+    }
+
+    // 队列排空且这一局已经结算：补算出来的评分必须回流到落盘复盘，
+    // 否则 summary / perfectMoves 永远停在结算瞬间那 2–3 步上（刷新后数字倒退）。
+    // persistReview 按增量入账，重复调用安全。
+    if (state.over) persistReview();
   }
 
   function scheduleEval() {
@@ -628,12 +636,13 @@
   }
 
   /**
-   * 结算时落盘复盘：补算剩余评分 -> 汇总 -> 写入 review.<dateKey>。
+   * 把当前内存日志汇总并落盘 review.<dateKey>，按本局增量补记「与 AI 一致步数」。
    *
-   * 一局最多结算两次：达成目标先写一份，继续挑战后卡死 / 超时再覆盖同一键。
-   * 两次都基于同一份内存日志，所以第二次天然覆盖整局；日志留到开新局才重置。
+   * 幂等：同一份日志重复调用只会覆盖同一个键，perfectMoves 只补新增的一致步数
+   * （recordReviewAchievements 内部按 state.perfectRecorded 补差）。
+   * 所以结算时调一次、异步补算排空后再调一次都安全。
    */
-  function finalizeReview() {
+  function persistReview() {
     if (!state.reviewLog) return;
     if (!state.dailyKey || state.dailyKey !== todayKey()) return;
 
@@ -643,8 +652,6 @@
       maxTile: G.maxValue(state.board),
       won: state.won
     };
-
-    flushEvalQueue({ budgetMs: FLUSH_BUDGET_MS });
 
     var summary = Review.summarize(state.reviewLog, meta);
 
@@ -659,6 +666,22 @@
 
     // 成就口径的「与 AI 一致步数」跟复盘同一时机入账（内部按本局增量补差）
     recordReviewAchievements(summary);
+  }
+
+  /**
+   * 结算时落盘复盘：补算剩余评分 -> 汇总 -> 写入 review.<dateKey>。
+   *
+   * 一局最多结算两次：达成目标先写一份，继续挑战后卡死 / 超时再覆盖同一键。
+   * 两次都基于同一份内存日志，所以第二次天然覆盖整局；日志留到开新局才重置。
+   *
+   * 60ms 预算只够算 2–3 步；剩下的交给空闲回调继续算，算完由 runEval 再落一次盘。
+   */
+  function finalizeReview() {
+    if (!state.reviewLog) return;
+    if (!state.dailyKey || state.dailyKey !== todayKey()) return;
+
+    flushEvalQueue({ budgetMs: FLUSH_BUDGET_MS });
+    persistReview();
 
     // 继续挑战会接着这局玩：日志与未算完的队列都留着继续累积。
     // 最终结算同样不在这里清空 —— 只有开新局 / 换每日 / 撤销才会重置或裁剪。

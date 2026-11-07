@@ -834,8 +834,119 @@ async function main() {
   await send('Emulation.clearDeviceMetricsOverride');
   await wait(200);
 
-  /* ---------- T10 控制台 ---------- */
-  console.log('\n[T10] 控制台');
+  /* ---------- T10 结算后补算的评分回流落盘 ---------- */
+  console.log('\n[T10] 结算瞬间只算完几步时，补算结果要回写落盘');
+
+  // 在页面脚本之前挂一个观测器：记下每一次 review.<date> 落盘的 summary.scored。
+  // 这样「结算那份」和「排空后的回写」都能拿到确定值，不受 CDP 采样时机影响。
+  const observer = await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(function () {
+      var api = null;
+      window.__reviewWrites = [];
+      Object.defineProperty(window, 'Game2048Storage', {
+        configurable: true,
+        get: function () { return api; },
+        set: function (value) {
+          api = value;
+          var original = value.set;
+          value.set = function (key, val) {
+            if (typeof key === 'string' && key.indexOf('review.') === 0 && val && val.summary) {
+              window.__reviewWrites.push(val.summary.scored);
+            }
+            return original(key, val);
+          };
+        }
+      });
+    })()`
+  });
+
+  // 32 步待评分（b 全为 null）；6×6 盘面 + 12 个方块，AI 每步都会吃满 24ms 预算 ——
+  // 结算时的 60ms 预算最多算完两三步，剩下的只能靠空闲回调继续算。
+  const pendingKey = await evalJs(`(function () {
+    var key = Game2048Rng.dateKey(new Date());
+    var moves = [];
+    for (var i = 0; i < 32; i++) {
+      var v = [];
+      for (var r = 0; r < 6; r++) {
+        var row = [];
+        for (var c = 0; c < 6; c++) {
+          row.push((r + c) % 3 === 0 ? Math.pow(2, 1 + ((r * 6 + c) % 6)) : 0);
+        }
+        v.push(row);
+      }
+      moves.push({ d: 'left', v: v, g: 8, b: null, s: null, t: null });
+    }
+    Game2048Storage.set(Game2048Storage.KEYS.settings, { size: 4, mode: 'timed', sound: false });
+    Game2048Storage.set(Game2048Storage.KEYS.state, {
+      version: 2, size: 4, mode: 'timed',
+      values: [[2, 2, 0, 0], [4, 8, 0, 0], [16, 32, 0, 0], [64, 128, 0, 0]],
+      score: 120, won: false, keepPlaying: false,
+      // 200ms 后第一次 tick 就超时结算：此时队列里必然还压着大部分待评分
+      remainingMs: 200, obstaclesAdded: 0, moves: 32,
+      recorded: false, recordedMoves: 0,
+      daily: key, rngCount: 0, dailyRecorded: false, dailyRecordedMoves: 0,
+      perfectRecorded: 0,
+      reviewLog: { version: 1, date: key, moves: moves, summary: null }
+    });
+    return key;
+  })()`);
+  await reload();
+
+  const reviewStored = () => evalJs(`(function () {
+    var log = Game2048Storage.get(Game2048Storage.KEYS.review + '.' + ${JSON.stringify(pendingKey)}, null);
+    if (!log || !log.moves) return JSON.stringify(null);
+    var scored = 0;
+    for (var i = 0; i < log.moves.length; i++) {
+      var m = log.moves[i];
+      // 与 summarize 同一判定口径：方向与两个分数都齐才算「算完」
+      if (m && m.b !== null && typeof m.s === 'number' && typeof m.t === 'number') scored++;
+    }
+    return JSON.stringify({
+      total: log.moves.length,
+      scoredEntries: scored,
+      summaryScored: log.summary ? log.summary.scored : -1,
+      writes: window.__reviewWrites || [],
+      overlay: !document.getElementById('overlay').hidden
+    });
+  })()`);
+
+  let settle = null;
+  for (let i = 0; i < 120 && !settle; i++) {
+    const snap = JSON.parse(await reviewStored());
+    if (snap && snap.overlay) settle = snap;
+    else await wait(50);
+  }
+  check('超时结算真的发生并落盘了复盘',
+    Boolean(settle) && settle.total === 32 && settle.writes.length >= 1,
+    settle && 'total ' + settle.total + ' · writes ' + JSON.stringify(settle.writes));
+
+  let drained = settle;
+  for (let i = 0; i < 200; i++) {
+    if (drained && drained.scoredEntries === drained.total &&
+        drained.summaryScored === drained.total) break;
+    await wait(100);
+    const snap = JSON.parse(await reviewStored());
+    if (snap) drained = snap;
+  }
+
+  check('队列排空后所有步都算完了评分',
+    Boolean(drained) && drained.scoredEntries === drained.total,
+    drained && drained.scoredEntries + ' / ' + drained.total);
+  check('结算瞬间落盘的是半成品（说明补算确有积压）',
+    Boolean(settle) && settle.writes[0] < settle.total,
+    settle && settle.writes[0] + ' / ' + settle.total);
+  check('排空后又落了一次盘，scored 追平全部步数',
+    Boolean(drained) && drained.writes.length >= 2 &&
+      drained.writes[drained.writes.length - 1] === drained.total,
+    drained && JSON.stringify(drained.writes));
+  check('落盘 summary.scored 单调不减（重复落盘不会回退）',
+    Boolean(drained) && drained.writes.every((v, i) => i === 0 || v >= drained.writes[i - 1]),
+    drained && JSON.stringify(drained.writes));
+
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: observer.identifier });
+
+  /* ---------- T11 控制台 ---------- */
+  console.log('\n[T11] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
