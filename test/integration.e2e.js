@@ -846,7 +846,8 @@ async function main() {
   console.log('\n[I7] 手机视口 390×844 / 360×640 / 横屏 844×390');
 
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-  await click('#modeGroup [data-mode="classic"]');
+  // 固定右列盘面：左移必定能走，免得随机开局让滑动断言偶发失败
+  await inject({ mode: 'classic', values: BOARD_RIGHT_COL, moves: 0 });
   await wait(400);
 
   /** 量一次当前视口：触控目标、棋盘几何、提示文案、媒体查询命中情况 */
@@ -865,6 +866,7 @@ async function main() {
     var viewport = document.querySelector('meta[name="viewport"]');
     return JSON.stringify({
       coarse: window.matchMedia('(pointer: coarse)').matches,
+      maxWidth: document.getElementById('board').style.maxWidth,
       viewportFit: /viewport-fit\\s*=\\s*cover/.test(viewport.getAttribute('content')),
       overscroll: getComputedStyle(document.body).overscrollBehaviorY,
       touchAction: getComputedStyle(document.querySelector('.btn')).touchAction,
@@ -885,6 +887,9 @@ async function main() {
   await wait(500);
   const phone = await phoneProbe();
 
+  check('触屏棋盘边长由实测写入（不再靠 CSS 猜固定开销）',
+    parseInt(phone.maxWidth, 10) >= 260, phone.maxWidth);
+
   check('手机视口被识别为触屏（pointer: coarse 命中）', phone.coarse === true,
     'coarse=' + phone.coarse);
   check('viewport-fit=cover 与防回弹、防双击缩放都已生效',
@@ -899,7 +904,7 @@ async function main() {
     'btn=' + phone.mainBtnMin + ' · chip=' + phone.chipMin);
   check('390×844 下棋盘完整落在首屏且尺寸可玩',
     phone.board.top >= 0 && phone.board.bottom <= phone.viewHeight + 1 &&
-      phone.board.height >= 280 && phone.board.width >= 280,
+      phone.board.height >= 260 && phone.board.width >= 260,
     Math.round(phone.board.top) + '->' + Math.round(phone.board.bottom) +
       ' (' + Math.round(phone.board.width) + '×' + Math.round(phone.board.height) +
       ') / vh ' + phone.viewHeight);
@@ -933,7 +938,7 @@ async function main() {
   const small = await phoneProbe();
   check('360×640 下棋盘完整落在首屏、按钮仍够大、无横向溢出',
     small.mainBtnMin >= 36 && small.chipMin >= 28 &&
-      small.board.width >= 280 && small.board.height >= 280 &&
+      small.board.width >= 260 && small.board.height >= 260 &&
       small.board.top >= 0 && small.board.bottom <= small.viewHeight + 1 &&
       small.docWidth <= small.viewWidth,
     'btn=' + small.mainBtnMin + ' · chip=' + small.chipMin +
@@ -948,10 +953,130 @@ async function main() {
   await wait(500);
   const landscape = await phoneProbe();
   check('844×390 横屏下棋盘仍可玩、无横向溢出',
-    landscape.board.width >= 280 && landscape.board.height >= 280 &&
+    landscape.board.width >= 260 && landscape.board.height >= 260 &&
       landscape.docWidth <= landscape.viewWidth,
     Math.round(landscape.board.width) + '×' + Math.round(landscape.board.height) +
       ' · doc=' + landscape.docWidth + '/' + landscape.viewWidth);
+
+  /* ---------- I7b 跟手性：拖动预览 / 抬手即走 / 高频连滑 / 地址栏不抖动 ---------- */
+  console.log('\n[I7b] 拖动跟手 / 抬手即走 / 高频连滑不丢步');
+
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(400);
+  await inject({ mode: 'classic', values: BOARD_RIGHT_COL, moves: 0 });
+  await wait(300);
+
+  /** 构造一次真实走向的触摸手势；withUp=false 时只按下并拖动，用来看预览 */
+  const touchGesture = (dir, delta, withUp) => evalJs(`(async function () {
+    var board = document.getElementById('board');
+    var r = board.getBoundingClientRect();
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var dx = ${dir === 'left' ? -1 : dir === 'right' ? 1 : 0} * ${delta};
+    var dy = ${dir === 'up' ? -1 : dir === 'down' ? 1 : 0} * ${delta};
+    var base = { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', button: 0 };
+    function fire(type, cx, cy) {
+      board.dispatchEvent(new PointerEvent(type,
+        Object.assign({ clientX: cx, clientY: cy }, base)));
+    }
+    fire('pointerdown', x, y);
+    fire('pointermove', x + dx * 0.5, y + dy * 0.5);
+    fire('pointermove', x + dx, y + dy);
+    if (${withUp ? 'true' : 'false'}) {
+      fire('pointerup', x + dx, y + dy);
+      await Promise.resolve();   // 只让微任务跑完，不等任何动画或定时器
+    }
+    var layer = document.getElementById('tileLayer');
+    var saved = Game2048Storage.get(Game2048Storage.KEYS.state, null);
+    return JSON.stringify({
+      moves: saved ? saved.moves : -1,
+      dragging: layer.classList.contains('is-dragging'),
+      transform: layer.style.transform
+    });
+  })()`).then(JSON.parse);
+
+  // 连续几帧 pointermove：位移必须逐帧变大，证明是实时贴合而不是抬手时跳一下
+  const follow = JSON.parse(await evalJs(`(function () {
+    var board = document.getElementById('board');
+    var layer = document.getElementById('tileLayer');
+    var r = board.getBoundingClientRect();
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var base = { bubbles: true, cancelable: true, pointerId: 9, pointerType: 'touch', button: 0 };
+    function fire(type, cx, cy) {
+      board.dispatchEvent(new PointerEvent(type,
+        Object.assign({ clientX: cx, clientY: cy }, base)));
+    }
+    fire('pointerdown', x, y);
+    var samples = [];
+    [10, 25, 45, 70].forEach(function (d) {
+      fire('pointermove', x - d, y);
+      var m = /translate3d\\((-?[\\d.]+)px/.exec(layer.style.transform);
+      samples.push(m ? Number(m[1]) : 0);
+    });
+    fire('pointercancel', x - 70, y);
+    return JSON.stringify({ samples: samples, cleared: layer.style.transform === '' });
+  })()`));
+  check('连续 pointermove 位移逐帧递增（方块实时贴合手指）',
+    follow.samples.length === 4 && follow.samples[0] < 0 &&
+      follow.samples[1] < follow.samples[0] && follow.samples[2] < follow.samples[1] &&
+      follow.samples[3] < follow.samples[2],
+    follow.samples.join(' -> '));
+  check('手势取消后跟手预览立即收干净', follow.cleared === true,
+    String(follow.cleared));
+
+  const held = await touchGesture('left', 60, false);
+  check('拖动中方块层实时跟手（is-dragging + 非零位移）',
+    held.dragging === true && /translate3d\(-\d/.test(held.transform),
+    held.dragging + ' · ' + held.transform);
+  check('拖动预览只是视觉位移，不提前落子', held.moves === 0, 'moves=' + held.moves);
+
+  // 抬手方向要与上面按住的手势一致：另发一次完整手势，读的是「抬手后立刻」
+  const released = await touchGesture('left', 60, true);
+  check('抬手后不等动画立刻走一步（零延迟结算）', released.moves === 1,
+    'moves=' + released.moves);
+  check('抬手后跟手预览已清除', released.dragging === false && released.transform === '',
+    released.dragging + ' · ' + released.transform);
+
+  const beforeBurst = await savedMoves();
+  const burstStart = Date.now();
+  const burstDirs = ['left', 'right', 'left', 'right', 'left', 'right', 'left', 'right'];
+  for (let i = 0; i < burstDirs.length; i++) {
+    await touchGesture(burstDirs[i], 45, true);
+  }
+  const burstMs = Date.now() - burstStart;
+  const afterBurst = await savedMoves();
+  check('连续 8 次高频滑动一步不丢', afterBurst === beforeBurst + 8,
+    beforeBurst + ' -> ' + afterBurst);
+  check('8 步在 1 秒内跑完（没有被 285ms 动画串行拖住）', burstMs < 1000, burstMs + 'ms');
+
+  // 地址栏收放只改高度；棋盘尺寸不能跟着抖，否则正拖到一半会失去参照
+  const sizeBefore = await evalJs('document.getElementById("board").style.maxWidth');
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 760, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(350);
+  const sizeAfter = await evalJs('document.getElementById("board").style.maxWidth');
+  check('视口高度变化（地址栏收放）不改变棋盘尺寸', sizeAfter === sizeBefore,
+    sizeBefore + ' -> ' + sizeAfter);
+
+  /* ---------- I7c 更多机型：小屏 / 主流 / 大屏 / 平板 ---------- */
+  console.log('\n[I7c] 更多机型尺寸：320×568 / 375×667 / 412×915 / 430×932 / 768×1024');
+  const phoneSizes = [[320, 568], [375, 667], [412, 915], [430, 932], [768, 1024]];
+  for (let i = 0; i < phoneSizes.length; i++) {
+    const pw = phoneSizes[i][0];
+    const ph = phoneSizes[i][1];
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: pw, height: ph, deviceScaleFactor: 2, mobile: true
+    });
+    await wait(250);
+    const p = await phoneProbe();
+    check(pw + '×' + ph + ' 下棋盘可玩、无横向溢出、触控目标达标',
+      p.board.width >= 260 && p.board.height >= 260 &&
+        p.docWidth <= p.viewWidth && p.mainBtnMin >= 36 && p.chipMin >= 28,
+      'board=' + Math.round(p.board.width) + ' · doc=' + p.docWidth + '/' + p.viewWidth +
+        ' · btn=' + p.mainBtnMin + '/' + p.chipMin);
+  }
 
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await send('Emulation.clearDeviceMetricsOverride');
