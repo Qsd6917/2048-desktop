@@ -377,14 +377,9 @@ async function main() {
   check('继续挑战期间还能继续走子', typeof movesPlayed === 'number' && movesPlayed > 1, '已走 ' + movesPlayed + ' 步');
 
   // 把表跑完，制造同一局的第二次结算（旧实现会因 recorded 直接 return）
-  await evalJs(`(function () {
-    window.__realNow = Date.now.bind(Date);
-    var t0 = window.__realNow();
-    Date.now = function () { return t0 + (window.__realNow() - t0) * 300; };
-    return 1;
-  })()`);
-  await wait(1600);
-  await evalJs('Date.now = window.__realNow, 1');
+  await withFakeClock(async () => {
+    await wait(1600);
+  });
 
   check('时间到浮层出现', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
 
@@ -444,14 +439,9 @@ async function main() {
 
   check('刷新后仍从上一局继续（浮层未弹）', (await overlayHidden()) === true);
 
-  await evalJs(`(function () {
-    window.__realNow2 = Date.now.bind(Date);
-    var t0 = window.__realNow2();
-    Date.now = function () { return t0 + (window.__realNow2() - t0) * 300; };
-    return 1;
-  })()`);
-  await wait(1600);
-  await evalJs('Date.now = window.__realNow2, 1');
+  await withFakeClock(async () => {
+    await wait(1600);
+  });
 
   check('刷新后超时能正常结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
 
@@ -529,14 +519,9 @@ async function main() {
   console.log('\n[T8] 倒计时归零的样式');
 
   await loadBoard(BOARD_RIGHT_COL, 'timed');
-  await evalJs(`(function () {
-    window.__realNow3 = Date.now.bind(Date);
-    var t0 = window.__realNow3();
-    Date.now = function () { return t0 + (window.__realNow3() - t0) * 400; };
-    return 1;
-  })()`);
-  await wait(1400);
-  await evalJs('Date.now = window.__realNow3, 1');
+  await withFakeClock(async () => {
+    await wait(1400);
+  }, 400);
 
   const timeUpTitle = await text('#overlayTitle');
   const clockText = await text('#timer');
@@ -848,14 +833,9 @@ async function main() {
     JSON.stringify(savedMid && { perfectRecorded: savedMid.perfectRecorded, moves: savedMid.moves }));
 
   // 加速时间跑到超时，触发同一局的第二次汇总
-  await evalJs(`(function () {
-    window.__realNow4 = Date.now.bind(Date);
-    var t0 = window.__realNow4();
-    Date.now = function () { return t0 + (window.__realNow4() - t0) * 300; };
-    return 1;
-  })()`);
-  await wait(1600);
-  await evalJs('Date.now = window.__realNow4, 1');
+  await withFakeClock(async () => {
+    await wait(1600);
+  });
   check('时间到正常结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
 
   const afterSecond = JSON.parse(await evalJs(
@@ -1617,7 +1597,6 @@ async function main() {
   });
   check('双人死局同分判平局', (await text('#overlayTitle')) === '平局', await text('#overlayTitle'));
 
-  // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
   // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
   const statsBeforeDuelWin = await stats();
   await loadBoard([
