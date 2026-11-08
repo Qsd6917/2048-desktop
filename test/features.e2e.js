@@ -628,29 +628,29 @@ async function main() {
   // 彩带在滑行动画后就开撒，浮层要等动画收尾才弹：先等浮层真的打开再断言层叠
   for (let i = 0; i < 30 && (await hidden('#overlay')); i++) await wait(100);
 
-  // 彩带在飞的同时，浮层文字必须压在粒子之上（M2 的层叠回归）
+  // 彩带在飞的同时，浮层文字必须压在粒子之上（M2 的层叠回归）。
+  // 这里不能用 elementFromPoint 做判据：#fx 是 pointer-events:none，命中点永远穿透它，
+  // 无论它挂在 40 层还是 0 层，取到的都是浮层自己 —— 这类断言恒真。
+  // 真正可证伪的是层叠关系：粒子层必须低于应用层，且浮层必须在应用层之内。
   const stack = JSON.parse(await evalJs(`(function () {
     var canvas = document.getElementById('fx');
-    var title = document.getElementById('overlayTitle');
-    var rect = title.getBoundingClientRect();
-    var hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    var app = document.querySelector('.app');
+    var overlay = document.getElementById('overlay');
     return JSON.stringify({
-      overlayOpen: !document.getElementById('overlay').hidden,
+      overlayOpen: !overlay.hidden,
       bodyClass: document.body.classList.contains('is-overlay-open'),
       z: getComputedStyle(canvas).zIndex,
-      hitTag: hit ? hit.tagName : null,
-      // #fx 是 pointer-events:none，elementFromPoint 永远取不到它，
-      // 所以「命中不是 canvas」是恒真的。要验证标题真的压在粒子上，
-      // 只能看命中点上最顶层的可交互元素是不是浮层自己。
-      hitInOverlay: hit ? hit.closest('#overlay') !== null : false
+      appZ: getComputedStyle(app).zIndex,
+      overlayInApp: app.contains(overlay)
     });
   })()`));
 
   check('浮层打开时 #fx 降到 0 层（应用抬到粒子之上）',
     stack.overlayOpen === true && stack.z === '0', stack.z);
   check('浮层打开时 body 挂上 is-overlay-open', stack.bodyClass === true);
-  check('浮层标题中心命中的元素在浮层内',
-    stack.hitInOverlay === true, String(stack.hitTag));
+  check('浮层打开时粒子层低于应用层，且浮层仍在应用层内',
+    Number(stack.z) < Number(stack.appZ) && stack.overlayInApp === true,
+    'fx=' + stack.z + ' · app=' + stack.appZ + ' · inApp=' + stack.overlayInApp);
 
   const stageWin = JSON.parse(await evalJs(`(function () {
     var root = document.documentElement;
