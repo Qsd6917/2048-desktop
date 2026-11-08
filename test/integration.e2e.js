@@ -840,8 +840,125 @@ async function main() {
   await send('Emulation.clearDeviceMetricsOverride');
   await wait(200);
 
-  /* ---------- I7 控制台 ---------- */
-  console.log('\n[I7] 控制台');
+  /* ---------- I7 手机视口：触控尺寸、首屏棋盘、真实滑动 ---------- */
+  // 用 CDP 把 Chrome 变成触屏设备；只靠改窗口宽度不会让 (pointer: coarse) 命中，
+  // 那样测到的仍是鼠标样式，下面的触控断言就没有意义。
+  console.log('\n[I7] 手机视口 390×844 / 360×640 / 横屏 844×390');
+
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await click('#modeGroup [data-mode="classic"]');
+  await wait(400);
+
+  /** 量一次当前视口：触控目标、棋盘几何、提示文案、媒体查询命中情况 */
+  const phoneProbe = async () => JSON.parse(await evalJs(`(function () {
+    function minHeight(list) {
+      var min = Infinity;
+      for (var i = 0; i < list.length; i++) {
+        var h = list[i].getBoundingClientRect().height;
+        if (h > 0 && h < min) min = h;
+      }
+      return min === Infinity ? 0 : Math.round(min);
+    }
+    var board = document.getElementById('board').getBoundingClientRect();
+    var keys = document.querySelector('.hint--keys');
+    var touch = document.querySelector('.hint--touch');
+    var viewport = document.querySelector('meta[name="viewport"]');
+    return JSON.stringify({
+      coarse: window.matchMedia('(pointer: coarse)').matches,
+      viewportFit: /viewport-fit\\s*=\\s*cover/.test(viewport.getAttribute('content')),
+      overscroll: getComputedStyle(document.body).overscrollBehaviorY,
+      touchAction: getComputedStyle(document.querySelector('.btn')).touchAction,
+      mainBtnMin: minHeight(document.querySelectorAll('.controls .btn')),
+      chipMin: minHeight(document.querySelectorAll('#modeGroup [data-mode]')),
+      keysHint: keys ? getComputedStyle(keys).display : 'missing',
+      touchHint: touch ? getComputedStyle(touch).display : 'missing',
+      board: { top: board.top, bottom: board.bottom, width: board.width, height: board.height },
+      docWidth: document.documentElement.scrollWidth,
+      viewWidth: window.innerWidth,
+      viewHeight: window.innerHeight
+    });
+  })()`));
+
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(500);
+  const phone = await phoneProbe();
+
+  check('手机视口被识别为触屏（pointer: coarse 命中）', phone.coarse === true,
+    'coarse=' + phone.coarse);
+  check('viewport-fit=cover 与防回弹、防双击缩放都已生效',
+    phone.viewportFit === true && phone.overscroll === 'none' &&
+      phone.touchAction === 'manipulation',
+    phone.viewportFit + ' · ' + phone.overscroll + ' · ' + phone.touchAction);
+  check('提示文案切成「在棋盘上滑动」',
+    phone.keysHint === 'none' && phone.touchHint !== 'none',
+    phone.keysHint + ' / ' + phone.touchHint);
+  check('手机下控制按钮触控目标 ≥36px、模式 chip ≥28px',
+    phone.mainBtnMin >= 36 && phone.chipMin >= 28,
+    'btn=' + phone.mainBtnMin + ' · chip=' + phone.chipMin);
+  check('390×844 下棋盘完整落在首屏且尺寸可玩',
+    phone.board.top >= 0 && phone.board.bottom <= phone.viewHeight + 1 &&
+      phone.board.height >= 280 && phone.board.width >= 280,
+    Math.round(phone.board.top) + '->' + Math.round(phone.board.bottom) +
+      ' (' + Math.round(phone.board.width) + '×' + Math.round(phone.board.height) +
+      ') / vh ' + phone.viewHeight);
+  check('390×844 下没有横向溢出', phone.docWidth <= phone.viewWidth,
+    phone.docWidth + ' <= ' + phone.viewWidth);
+
+  // 真实滑动：派发带 pointerType:'touch' 的 PointerEvent，走的是玩家实际用的那条路径
+  const movesBefore = await savedMoves();
+  await evalJs(`(function () {
+    var board = document.getElementById('board');
+    var r = board.getBoundingClientRect();
+    var x = r.left + r.width * 0.75;
+    var y = r.top + r.height * 0.5;
+    var base = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', button: 0 };
+    board.dispatchEvent(new PointerEvent('pointerdown',
+      Object.assign({ clientX: x, clientY: y }, base)));
+    board.dispatchEvent(new PointerEvent('pointerup',
+      Object.assign({ clientX: x - 90, clientY: y }, base)));
+    return 1;
+  })()`);
+  await wait(700);
+  const movesAfter = await savedMoves();
+  check('触屏左滑能真的走一步', movesAfter === movesBefore + 1,
+    movesBefore + ' -> ' + movesAfter);
+
+  // 小屏竖屏：空间紧，但棋盘不能被压没、操作也不能溢出
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 360, height: 640, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(500);
+  const small = await phoneProbe();
+  check('360×640 下棋盘完整落在首屏、按钮仍够大、无横向溢出',
+    small.mainBtnMin >= 36 && small.chipMin >= 28 &&
+      small.board.width >= 280 && small.board.height >= 280 &&
+      small.board.top >= 0 && small.board.bottom <= small.viewHeight + 1 &&
+      small.docWidth <= small.viewWidth,
+    'btn=' + small.mainBtnMin + ' · chip=' + small.chipMin +
+      ' · board=' + Math.round(small.board.width) +
+      ' (' + Math.round(small.board.top) + '->' + Math.round(small.board.bottom) +
+      ' / vh ' + small.viewHeight + ') · doc=' + small.docWidth);
+
+  // 横屏：高度不够，允许纵向滚动，但棋盘不能被压成 0，也不能横向溢出
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 844, height: 390, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(500);
+  const landscape = await phoneProbe();
+  check('844×390 横屏下棋盘仍可玩、无横向溢出',
+    landscape.board.width >= 280 && landscape.board.height >= 280 &&
+      landscape.docWidth <= landscape.viewWidth,
+    Math.round(landscape.board.width) + '×' + Math.round(landscape.board.height) +
+      ' · doc=' + landscape.docWidth + '/' + landscape.viewWidth);
+
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await send('Emulation.clearDeviceMetricsOverride');
+  await wait(300);
+
+  /* ---------- I8 控制台 ---------- */
+  console.log('\n[I8] 控制台');
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');

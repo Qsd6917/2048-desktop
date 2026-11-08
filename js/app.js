@@ -2941,6 +2941,16 @@
   function onPointerDown(event) {
     if (event.button !== undefined && event.button !== 0) return;
     pointerStart = { x: event.clientX, y: event.clientY };
+
+    // 手指很容易滑出棋盘边界；不捕获指针的话 pointerup 就落在别处，
+    // 这一划会整个丢掉。老浏览器可能没有这个 API，包一层保护。
+    if (event.pointerId !== undefined && els.board.setPointerCapture) {
+      try {
+        els.board.setPointerCapture(event.pointerId);
+      } catch (err) {
+        // 捕获失败不影响起点记录，pointerup 落在棋盘内时仍然有效
+      }
+    }
   }
 
   function onPointerUp(event) {

@@ -38,6 +38,13 @@
   --ease-out: cubic-bezier(0.32, 0.72, 0.28, 1);
 
   /*
+   * 棋盘之外的固定开销（标题 / HUD / 两排按钮 / 设置面板 / 页脚）。
+   * 桌面实测 432px；触屏下按钮放大到能按准，开销由下面的触控媒体块覆盖。
+   * 改这个数必须同步跑 test/features.e2e.js 的 T9 与 test/integration.e2e.js 的 I6 实测断言。
+   */
+  --chrome-h: 432px;
+
+  /*
    * 舞台底色：按最大方块分五档，renderHud 只把档位写进
    * --stage-tint / --stage-glow（值形如 var(--stage-tint-3)）。
    * 五档全部由上面的纸张 / 木色派生，不引入第二套配色：
@@ -73,6 +80,11 @@ body {
   margin: 0;
   min-height: 100dvh;
   padding: 24px 18px 18px;
+  /* 刘海 / 底部 Home 条：viewport-fit=cover 下 env() 才有值，桌面恒为 0 */
+  padding-top: max(24px, env(safe-area-inset-top));
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+  padding-left: max(18px, env(safe-area-inset-left));
+  padding-right: max(18px, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -86,13 +98,17 @@ body {
     "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* 手机上滑动棋盘时别触发下拉刷新 / 橡皮筋回弹，也别留一块灰色点击高亮 */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /*
  * 竖直方向的尺寸分配：
  *   1. 宽度同时受「视口宽」和「视口高」约束 —— 棋盘是正方形，宽高必须一起让，
  *      否则高窗口里棋盘永远只有 452px、下面留一大截空白（问题 5）。
- *      减掉的 432px 是标题、HUD、每日条、两排控制条、设置面板与页脚的固定开销。
+ *      减掉的 --chrome-h（默认 432px）是标题、HUD、每日条、两排控制条、
+ *      设置面板与页脚的固定开销；触屏下按钮更大，这个值在触控媒体块里覆盖。
  *      这个数是实测出来的：1280×800 下取 396px 时页脚底边 818 > 视口 800
  *      （整页 scrollHeight 836），按每 1px 棋盘高度折算 1px 页面高度，
  *      补足 36px 后页脚底边 782、scrollHeight 800，正好不溢出。
@@ -108,7 +124,7 @@ body {
    */
   position: relative;
   z-index: 1;
-  width: min(100%, 500px, max(280px, calc(100dvh - 432px)));
+  width: min(100%, 500px, max(280px, calc(100dvh - var(--chrome-h))));
   margin-block: auto;
   display: flex;
   flex-direction: column;
@@ -145,6 +161,11 @@ body {
   font-size: 11px;
   line-height: 1.5;
   color: var(--ink-faint);
+}
+
+/* 触屏版提示：默认藏起来，由下面的触控媒体块切换 */
+.hint--touch {
+  display: none;
 }
 
 /* ---------- HUD：得分 / 最高 / 目标 / 最大 / 计时 ---------- */
@@ -350,6 +371,8 @@ body {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
+  /* 手机上双击按钮不该缩放页面；棋盘自身的 touch-action:none 不受影响 */
+  touch-action: manipulation;
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
@@ -1596,7 +1619,11 @@ body.is-overlay-open #fx {
 
 @media (max-height: 780px) {
   body {
-    padding: 16px 16px 12px;
+    /* 同样要给安全区留位置：小屏手机既矮又有刘海 */
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
   }
 
   .brand h1 {
@@ -1647,6 +1674,90 @@ body.is-overlay-open #fx {
   .btn--switch {
     height: 26px;
   }
+}
+
+/* ---------- 触屏：手指要按得准，浏览器手势别来抢 ---------- */
+
+/*
+ * 桌面按钮 32px / chip 24px 是给鼠标用的，手指按上去误触率很高。
+ * 这里把主要触控目标抬到 36–40px，放大后的固定开销由 --chrome-h 从棋盘
+ * 宽度里让出来，所以棋盘仍会跟着视口高度缩放，不会被顶出屏幕。
+ * 只用 pointer: coarse 作判据：桌面把窗口拉窄不该改变按钮尺寸，
+ * 也不会动到 test/integration.e2e.js 里 320px 窄屏的既有几何断言。
+ */
+@media (pointer: coarse) {
+  :root {
+    --chrome-h: 500px;
+  }
+
+  .hint--keys { display: none; }
+  .hint--touch { display: inline; }
+
+  .btn {
+    height: 40px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .btn--chip {
+    height: 34px;
+    font-size: 12.5px;
+  }
+
+  .btn--switch {
+    height: 38px;
+    font-size: 12.5px;
+  }
+
+  .btn--icon {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .controls { gap: 7px; }
+  .daily-bar { height: 40px; }
+
+  .settings {
+    gap: 8px 10px;
+    padding: 9px 10px 10px;
+  }
+
+  .hud-item { padding: 6px 4px 7px; }
+  .hud-value, .hud-timer { font-size: 15px; }
+  .footer { margin-top: 10px; }
+}
+
+/* 小屏手机再压一档：标题、面板和按钮一起瘦身，尽量把棋盘留在首屏 */
+@media (pointer: coarse) and (max-height: 720px) {
+  :root {
+    --chrome-h: 440px;
+  }
+
+  body {
+    padding-top: max(12px, env(safe-area-inset-top));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .brand h1 { font-size: 26px; }
+  .hint { font-size: 10px; }
+  .header { margin-bottom: 4px; }
+
+  .hud-item { padding: 3px 3px 4px; }
+  .controls { margin-bottom: 5px; }
+  .daily-bar { margin-bottom: 5px; }
+
+  .btn { height: 36px; font-size: 12.5px; }
+  .btn--chip { height: 30px; }
+  .btn--switch { height: 34px; }
+
+  .settings {
+    gap: 5px 10px;
+    padding: 5px 9px 6px;
+    margin-bottom: 6px;
+  }
+
+  .footer { margin-top: 4px; }
 }
 
 /* ---------- 降低动态效果 ---------- */
