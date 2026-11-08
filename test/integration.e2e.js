@@ -7,7 +7,8 @@
  *   2. 每日局的战报页脚「第 N 次」与每日条是同一个 N；
  *   3. 托管 + 复盘 + 限时叠加：开托管 → 开复盘 → 关复盘，计时与托管都回来；
  *   4. 双人结束 → 切回经典 → 走一步 → 战报入口照常（双人没把战报依赖弄坏）；
- *   5. 320px 下第四个模式按钮 / 双人比分块 / 战报按钮不溢出；1280×800 棋盘不被裁。
+ *   5. 320px 下第四个模式按钮 / 双人比分块 / 战报按钮不溢出；1280×800 棋盘不被裁，
+ *      切到双人后每日条收起、页脚仍在视口内。
  *
  * 启动方式刻意与 test/app.e2e.js、test/features.e2e.js 保持一致（复制而非 import）：
  * 三个套件互不依赖，任何一个改动都不会把另一个带崩。
@@ -803,6 +804,38 @@ async function main() {
       ' / vh ' + wide.viewHeight);
   check('1280×800 下没有横向溢出', wide.docWidth <= wide.viewWidth,
     wide.docWidth + ' <= ' + wide.viewWidth);
+
+  /* ---------- I6b 1280×800 双人：每日条必须收起 ---------- */
+  // 现有宽屏断言只在 classic 下跑，双人是这条预算的唯一漏网场景：
+  // 两条信息条同时常驻会多出 43px（34 高 + 9 间距），把 368px 棋盘撑出滚动。
+  console.log('\n[I6b] 1280×800 切到双人：每日条收起、页脚不溢出');
+
+  await click('#modeGroup [data-mode="duel"]');
+  await wait(700);
+
+  const wideDuel = JSON.parse(await evalJs(`(function () {
+    var footer = document.querySelector('.footer').getBoundingClientRect();
+    var duel = document.getElementById('duelBar').getBoundingClientRect();
+    return JSON.stringify({
+      footerBottom: footer.bottom,
+      docHeight: document.documentElement.scrollHeight,
+      viewHeight: window.innerHeight,
+      dailyHidden: document.getElementById('dailyBar').hidden,
+      duelHidden: document.getElementById('duelBar').hidden,
+      duelHeight: duel.height
+    });
+  })()`));
+
+  check('1280×800 双人下每日条收起（不与双人回合条叠加）',
+    wideDuel.dailyHidden === true, 'hidden=' + wideDuel.dailyHidden);
+  check('1280×800 双人下双人回合条可见且有高度',
+    wideDuel.duelHidden === false && wideDuel.duelHeight > 0,
+    'hidden=' + wideDuel.duelHidden + ' · h=' + Math.round(wideDuel.duelHeight));
+  check('1280×800 双人下页脚没被挤出视口且整页无纵向滚动',
+    wideDuel.footerBottom <= wideDuel.viewHeight + 0.5 &&
+      wideDuel.docHeight <= wideDuel.viewHeight + 1,
+    'footer ' + Math.round(wideDuel.footerBottom) + ' · doc ' + wideDuel.docHeight +
+      ' / vh ' + wideDuel.viewHeight);
 
   await send('Emulation.clearDeviceMetricsOverride');
   await wait(200);

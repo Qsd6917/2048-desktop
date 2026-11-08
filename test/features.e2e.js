@@ -437,8 +437,10 @@ async function main() {
   check('超大 rngCount 被钳到 1e5 附近（不是 1e12）',
     Boolean(clamped) && clamped.rngCount <= 100010,
     clamped && String(clamped.rngCount));
-  check('超大 obstaclesAdded 被钳到盘面格数以内',
-    Boolean(clamped) && clamped.obstaclesAdded <= 16,
+  // 天花板是 maxObstacles() = 棋盘尺寸（4），不是格数 size²（16）：
+  // 按格数封顶会让坏档读到 16 就够压住 shouldAddObstacle，障碍模式整局静默失效。
+  check('超大 obstaclesAdded 被钳到一局上限（棋盘尺寸 4）',
+    Boolean(clamped) && clamped.obstaclesAdded === 4,
     clamped && String(clamped.obstaclesAdded));
   check('正常步数不被坏字段带偏', Boolean(clamped) && clamped.moves === 4,
     clamped && String(clamped.moves));
@@ -636,14 +638,19 @@ async function main() {
       overlayOpen: !document.getElementById('overlay').hidden,
       bodyClass: document.body.classList.contains('is-overlay-open'),
       z: getComputedStyle(canvas).zIndex,
-      hitTag: hit ? hit.tagName : null
+      hitTag: hit ? hit.tagName : null,
+      // #fx 是 pointer-events:none，elementFromPoint 永远取不到它，
+      // 所以「命中不是 canvas」是恒真的。要验证标题真的压在粒子上，
+      // 只能看命中点上最顶层的可交互元素是不是浮层自己。
+      hitInOverlay: hit ? hit.closest('#overlay') !== null : false
     });
   })()`));
 
   check('浮层打开时 #fx 降到 0 层（应用抬到粒子之上）',
     stack.overlayOpen === true && stack.z === '0', stack.z);
   check('浮层打开时 body 挂上 is-overlay-open', stack.bodyClass === true);
-  check('浮层标题中心取到的不是 canvas', stack.hitTag !== 'CANVAS', String(stack.hitTag));
+  check('浮层标题中心命中的元素在浮层内',
+    stack.hitInOverlay === true, String(stack.hitTag));
 
   const stageWin = JSON.parse(await evalJs(`(function () {
     var root = document.documentElement;

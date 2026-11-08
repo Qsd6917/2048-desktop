@@ -1271,13 +1271,77 @@ async function main() {
   await press('Escape');
   await wait(150);
 
-  // M7：状态行与计时器要能被读屏读到
-  check('#status 是 polite 的 live region',
-    (await evalJs('document.getElementById("status").getAttribute("role")')) === 'status' &&
-      (await evalJs('document.getElementById("status").getAttribute("aria-live")')) === 'polite');
-  check('#timer 有「剩余时间」的可读标签',
-    (await evalJs('document.getElementById("timer").getAttribute("aria-label")')) === '剩余时间',
-    await evalJs('document.getElementById("timer").getAttribute("aria-label")'));
+  // M7：可视状态行与读屏播报节点分工，计时器的可访问名要带上倒计时数值。
+  // 限时局才有计时器：换成 timed 盘面再量，否则 classic 下 #timer 是 hidden + 空文本。
+  await loadBoard(BOARD_RIGHT_COL, 'timed');
+  await wait(200);
+
+  const liveRegions = JSON.parse(await evalJs(`(function () {
+    var bar = document.getElementById('status');
+    var ann = document.getElementById('statusAnnounce');
+    var box = ann ? ann.getBoundingClientRect() : null;
+    return JSON.stringify({
+      statusRole: bar.getAttribute('role'),
+      statusLive: bar.getAttribute('aria-live'),
+      annRole: ann ? ann.getAttribute('role') : null,
+      annLive: ann ? ann.getAttribute('aria-live') : null,
+      annDisplay: ann ? getComputedStyle(ann).display : null,
+      annWidth: box ? box.width : -1,
+      annHeight: box ? box.height : -1
+    });
+  })()`));
+
+  check('#status 只承担可视文本，不再是 live region',
+    liveRegions.statusRole === null && liveRegions.statusLive === null,
+    liveRegions.statusRole + ' / ' + liveRegions.statusLive);
+  check('独立的播报节点是 polite 的 live region',
+    liveRegions.annRole === 'status' && liveRegions.annLive === 'polite',
+    liveRegions.annRole + ' / ' + liveRegions.annLive);
+  // 视觉隐藏不能靠 display:none / visibility:hidden —— 那样连播报一起没了
+  check('播报节点视觉隐藏（1px）但仍参与渲染',
+    liveRegions.annDisplay !== 'none' &&
+      liveRegions.annWidth <= 1 && liveRegions.annHeight <= 1,
+    liveRegions.annDisplay + ' · ' +
+      Math.round(liveRegions.annWidth) + '×' + Math.round(liveRegions.annHeight));
+
+  const clockOf = () => evalJs(`(function () {
+    var timer = document.getElementById('timer');
+    return JSON.stringify({ clock: timer.textContent, label: timer.getAttribute('aria-label') });
+  })()`).then(JSON.parse);
+
+  const clock1 = await clockOf();
+  check('#timer 的 aria-label 带当前倒计时数值',
+    /^\d{2}:\d{2}$/.test(clock1.clock) && clock1.label === '剩余时间 ' + clock1.clock,
+    clock1.clock + ' / ' + clock1.label);
+
+  await wait(1200);   // 跨过一个 200ms tick，mm:ss 必然变化
+  const clock2 = await clockOf();
+  check('倒计时走一格后 aria-label 跟着变（不是恒定的静态标签）',
+    clock2.clock !== clock1.clock && clock2.label === '剩余时间 ' + clock2.clock,
+    clock1.label + ' -> ' + clock2.label);
+
+  // 每步文案只进可视行；撤销这类真正的反馈才进播报节点
+  await press('ArrowLeft');
+  await wait(700);
+  const afterStep = JSON.parse(await evalJs(`(function () {
+    return JSON.stringify({
+      moves: (Game2048Storage.get(Game2048Storage.KEYS.state, null) || {}).moves,
+      visible: document.getElementById('status').textContent,
+      announced: document.getElementById('statusAnnounce').textContent
+    });
+  })()`));
+  check('走一步后可视状态行照常写步数文案', afterStep.moves === 1 && /已走\s*1\s*步/.test(afterStep.visible),
+    'moves=' + afterStep.moves + ' · ' + afterStep.visible);
+  check('走一步后播报节点没有变成步数文案', /已走/.test(afterStep.announced) === false,
+    JSON.stringify(afterStep.announced));
+
+  // press 只发 key，撤销的组合键要单独构造
+  await evalJs(
+    'document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true })), 1'
+  );
+  await wait(400);
+  const announcedUndo = await evalJs('document.getElementById("statusAnnounce").textContent');
+  check('Ctrl+Z 撤销后播报节点含「撤销」', /撤销/.test(announcedUndo), announcedUndo);
 
   /* ---------- T20 每日挑战先关托管 ---------- */
   console.log('\n[T20] 托管中点每日挑战：先关托管再开新局');
