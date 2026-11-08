@@ -36,6 +36,17 @@
   var UNDO_LIMIT = 20;
   /** 触摸滑动的最小位移，太小会被当成点击 */
   var SWIPE_THRESHOLD = 24;
+  /** 触屏抬手判定用的更小阈值：手指短促一划也该走一步 */
+  var SWIPE_THRESHOLD_TOUCH = 12;
+  /** 拖动跟手：超过这个位移就锁定主轴，抬手不再被抖动改方向 */
+  var DRAG_LOCK_PX = 6;
+  /** 方块跟随手指的比例；小于 1 是阻尼，避免整块棋盘被拖飞 */
+  var DRAG_FOLLOW = 0.55;
+  /** 跟手位移上限，按棋盘边长的比例算 */
+  var DRAG_MAX_RATIO = 0.22;
+  /** 触屏按实测高度定棋盘边长时的下限与留白 */
+  var FIT_MIN_PX = 260;
+  var FIT_GAP_PX = 6;
   /** 托管每一步之间的间隔 */
   var AUTOPLAY_DELAY_MS = 220;
   /** 方向提示的光晕时长 */
@@ -110,6 +121,7 @@
   /* ---------- DOM ---------- */
 
   var els = {
+    app: document.getElementById('app'),
     board: document.getElementById('board'),
     grid: document.getElementById('gridLayer'),
     tiles: document.getElementById('tileLayer'),
@@ -500,6 +512,86 @@
    * 重绘每日条：日期 + 第几次 / 今日最佳 + 连续天数。
    * 处于每日局时按钮改成「重新开始」，普通局是「开始挑战」。
    */
+  /* ---------- 触屏布局：按实测可用高度定棋盘边长 ---------- */
+
+  var fitSignature = '';
+  var lastFitSize = 0;
+  var lastAppWidth = 0;
+  /** 紧凑档阈值：与 styles.css 的 body.is-compact 对应 */
+  var COMPACT_VH = 720;
+  /** 基准视口尺寸只在宽度变化时更新：地址栏收放不该让正滑到一半的棋盘变形 */
+  var stableVw = 0;
+  var stableVh = 0;
+
+  function isTouchLayout() {
+    return !!(global.matchMedia && global.matchMedia('(pointer: coarse)').matches);
+  }
+
+  /** 只有会改变「棋盘之外占用」的状态才需要重算，每步走子不触发同步布局 */
+  function layoutSignature() {
+    return [
+      settings.mode, settings.size,
+      els.dailyBar.hidden, els.duelBar.hidden,
+      els.settingsPanel ? els.settingsPanel.hidden : false,
+      els.timer.hidden
+    ].join('|');
+  }
+
+  function requestBoardFit() {
+    if (!isTouchLayout()) return;
+    var sig = layoutSignature();
+    if (sig === fitSignature) return;
+    fitSignature = sig;
+    // 同步算，不排 rAF：无头 / 后台标签页里帧回调可能被节流甚至不派发，
+    // 棋盘尺寸这种一次性布局不能押在「下一帧一定会来」上。
+    // 有 signature 去重，正常走子（每步 renderHud）不会触发同步布局读取。
+    fitBoardSize();
+  }
+
+  /**
+   * 触屏下用真实占用反推棋盘边长。
+   *
+   * 原来的做法是 CSS 里写死「视口高 - 固定开销」，但不同手机的刘海、系统字号、
+   * 设置面板开合、每日条显隐都会改动这笔开销，猜出来的数不是溢出就是留一大块白。
+   * 这里直接量棋盘顶部到视口顶部已经用掉多少，剩下的就是棋盘能占的高度。
+   *
+   * boardTop 用文档坐标，页面滚动过也算得准；基准高度 stableVh 只在宽度变化时更新，
+   * 所以地址栏收起/展开不会让棋盘尺寸跟着抖。
+   */
+  function fitBoardSize() {
+    if (!els.board || !els.app) return;
+    if (!isTouchLayout()) {
+      els.board.style.removeProperty('max-width');   // 桌面完全交回 CSS
+      document.body.classList.remove('is-compact');
+      lastFitSize = 0;
+      return;
+    }
+
+    var vw = global.innerWidth;
+    var vh = global.innerHeight;
+    if (vw !== stableVw || !stableVh) {
+      stableVw = vw;
+      stableVh = vh;
+    }
+    // 紧凑档也只看稳定高度，地址栏收放不会让按钮/间距中途换一档
+    document.body.classList.toggle('is-compact', stableVh <= COMPACT_VH);
+
+    var scrolled = global.pageYOffset || 0;
+    var boardTopDoc = els.board.getBoundingClientRect().top + scrolled;
+    var footer = document.querySelector('.footer');
+    var footerH = footer ? footer.getBoundingClientRect().height : 0;
+    var bottomPad = parseFloat(global.getComputedStyle(document.body).paddingBottom) || 0;
+    var available = stableVh - boardTopDoc - footerH - bottomPad - FIT_GAP_PX;
+    var size = Math.round(Math.min(els.app.clientWidth, Math.max(FIT_MIN_PX, available)));
+
+    // 收敛保护：ResizeObserver 会因棋盘尺寸变化再回调一次，
+    // 算出的值没变就一个字节都不写，避免观察循环。
+    if (size === lastFitSize) return;
+    lastFitSize = size;
+    els.board.style.maxWidth = size + 'px';
+    renderer.layout();   // 格子尺寸跟着新边长立刻重算，不等 ResizeObserver 回调
+  }
+
   function renderDailyBar() {
     if (!els.dailyBar) return;
 
@@ -523,6 +615,7 @@
     els.dailyDate.textContent = Rng.dateLabel(key);
     els.dailyMeta.textContent = meta.join(' · ');
     els.dailyStart.textContent = state.dailyKey ? '重新开始' : '开始挑战';
+    requestBoardFit();
   }
 
   /**
@@ -1434,6 +1527,7 @@
     renderDuelHud(duel);
     renderStage(maxTile);
     renderTimer();
+    requestBoardFit();
   }
 
   /**
@@ -2112,9 +2206,12 @@
 
   /**
    * 走一步（真正落子的唯一入口）。
+   * @param {string} dir 方向
+   * @param {{touch?: boolean}} [moveOpts] 触摸手势传入 touch:true：
+   *        逻辑立即结算、不等滑行动画，方块位置仍照常写（CSS 过渡负责视觉滑动）。
    * @returns {boolean} 是否真的走了一步；被锁、或这个方向推不动都返回 false
    */
-  function applyMove(dir) {
+  function applyMove(dir, moveOpts) {
     if (isLocked()) return false;
 
     var result = G.computeMove(state.board, dir);
@@ -2151,6 +2248,11 @@
         merges: result.merges,
         spawned: spawned,
         board: state.board   // 注意：此刻还没有本回合新长出来的障碍
+      }, {
+        // 触摸抬手要的是「立刻响应」：animate:false 让 playMove 同步完成 DOM 收尾并
+        // 立即 resolve，state.busy 只存在一个微任务。方块坐标照常写，
+        // .tile 的 CSS transition 仍会滑过去，视觉不打折、输入零等待。
+        animate: !(moveOpts && moveOpts.touch)
       })
       .then(function (completed) {
         if (state.session !== session) return;   // 已经换局或撤销，这一手作废
@@ -2196,10 +2298,13 @@
    *
    * 双人例外：不缓冲。换人发生在动画收尾，缓冲下来的方向会以对手的身份走掉、
    * 分数也记给对手，所以双人下动画期的按键直接丢弃（见下方 state.busy 分支）。
+   * 触摸手势走 touch:true 的零等待路径，动画期几乎不存在，缓冲基本不会被用到。
    *
+   * @param {string} dir 方向
+   * @param {{touch?: boolean}} [moveOpts] 交给 applyMove 的时序选项
    * @returns {boolean} 是否立刻走了一步
    */
-  function queueMove(dir) {
+  function queueMove(dir, moveOpts) {
     if (state.over || !els.overlay.hidden) return false;   // 已结算 / 浮层挡着：不接受也不缓冲
 
     if (state.busy) {
@@ -2212,7 +2317,7 @@
       return false;
     }
 
-    var moved = applyMove(dir);
+    var moved = applyMove(dir, moveOpts);
     if (moved) disableAutoplay();   // 只有真的走了一步才算从 AI 手里接管
     return moved;
   }
@@ -2883,6 +2988,7 @@
     els.settingsPanel.hidden = !willOpen;
     els.openSettings.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
     els.openSettings.classList.toggle('is-active', willOpen);
+    requestBoardFit();   // 面板开合改了棋盘之外的占用
   }
 
   /* ---------- 输入 ---------- */
@@ -2938,9 +3044,29 @@
 
   var pointerStart = null;
 
+  /** 只有手指/笔（或触屏设备）才需要拖动预览；鼠标拖动不挪方块 */
+  function wantsDragPreview(event) {
+    return event.pointerType === 'touch' || event.pointerType === 'pen' || isTouchLayout();
+  }
+
+  function clearDragPreview() {
+    if (!els.tiles) return;
+    els.tiles.classList.remove('is-dragging');
+    els.tiles.style.removeProperty('transform');
+  }
+
   function onPointerDown(event) {
     if (event.button !== undefined && event.button !== 0) return;
-    pointerStart = { x: event.clientX, y: event.clientY };
+    clearDragPreview();
+    pointerStart = {
+      x: event.clientX,
+      y: event.clientY,
+      id: event.pointerId,
+      preview: wantsDragPreview(event),
+      axis: null,
+      dir: null,
+      boardSize: els.board ? els.board.clientWidth : 0
+    };
 
     // 手指很容易滑出棋盘边界；不捕获指针的话 pointerup 就落在别处，
     // 这一划会整个丢掉。老浏览器可能没有这个 API，包一层保护。
@@ -2953,20 +3079,72 @@
     }
   }
 
+  /**
+   * 跟手预览：手指一动，整层方块就沿着主轴平移，不等抬手。
+   * 主轴在第一次越过 DRAG_LOCK_PX 时锁定，后面手指轻微抖动不会改方向；
+   * 位移带阻尼与上限，避免整块棋盘被拖出边界。
+   * 这里只做视觉位移，一步棋仍然只在抬手时落（玩法与交互不变）。
+   */
+  function onPointerMove(event) {
+    if (!pointerStart || !pointerStart.preview) return;
+    if (event.pointerId !== undefined && pointerStart.id !== undefined &&
+        event.pointerId !== pointerStart.id) return;
+
+    var dx = event.clientX - pointerStart.x;
+    var dy = event.clientY - pointerStart.y;
+    var ax = Math.abs(dx);
+    var ay = Math.abs(dy);
+
+    if (!pointerStart.axis) {
+      if (Math.max(ax, ay) < DRAG_LOCK_PX) return;
+      pointerStart.axis = ax > ay ? 'x' : 'y';
+      pointerStart.dir = pointerStart.axis === 'x'
+        ? (dx > 0 ? 'right' : 'left')
+        : (dy > 0 ? 'down' : 'up');
+    }
+
+    var delta = pointerStart.axis === 'x' ? dx : dy;
+    var maxOffset = Math.max(1, pointerStart.boardSize * DRAG_MAX_RATIO);
+    var offset = Math.max(-maxOffset, Math.min(maxOffset, delta * DRAG_FOLLOW));
+    var ox = pointerStart.axis === 'x' ? offset : 0;
+    var oy = pointerStart.axis === 'y' ? offset : 0;
+
+    els.tiles.classList.add('is-dragging');
+    els.tiles.style.transform =
+      'translate3d(' + ox.toFixed(1) + 'px,' + oy.toFixed(1) + 'px,0)';
+  }
+
+  function onPointerCancel() {
+    pointerStart = null;
+    clearDragPreview();
+  }
+
   function onPointerUp(event) {
     if (!pointerStart) return;
 
     var dx = event.clientX - pointerStart.x;
     var dy = event.clientY - pointerStart.y;
+    var axis = pointerStart.axis;
+    var dir = pointerStart.dir;
+    var preview = pointerStart.preview;
     pointerStart = null;
+    clearDragPreview();
 
-    if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return;
+    var threshold = preview ? SWIPE_THRESHOLD_TOUCH : SWIPE_THRESHOLD;
+    var reached = axis
+      ? Math.abs(axis === 'x' ? dx : dy) >= threshold
+      : Math.max(Math.abs(dx), Math.abs(dy)) >= threshold;
+    if (!reached) return;
 
-    if (Math.abs(dx) > Math.abs(dy)) {
-      queueMove(dx > 0 ? 'right' : 'left');
-    } else {
-      queueMove(dy > 0 ? 'down' : 'up');
+    if (!dir) {
+      dir = Math.abs(dx) > Math.abs(dy)
+        ? (dx > 0 ? 'right' : 'left')
+        : (dy > 0 ? 'down' : 'up');
     }
+
+    // 触摸这一手走零等待路径：逻辑立刻结算，不等 285ms 动画；
+    // 键盘与托管仍走原路径，busy / pendingDir 的语义保持不变。
+    queueMove(dir, preview ? { touch: true } : null);
   }
 
   /* ---------- 绑定 ---------- */
@@ -3023,10 +3201,44 @@
     });
 
     els.board.addEventListener('pointerdown', onPointerDown);
+    els.board.addEventListener('pointermove', onPointerMove);
     els.board.addEventListener('pointerup', onPointerUp);
-    els.board.addEventListener('pointercancel', function () {
-      pointerStart = null;
+    els.board.addEventListener('pointercancel', onPointerCancel);
+    // 指针捕获解除只是通知，pointerup 可能紧随其后：只收预览，不抹掉起点
+    els.board.addEventListener('lostpointercapture', clearDragPreview);
+
+    // 用布局变化兜底：浏览器缩放、旋屏、开发者工具改视口时，
+    // resize / matchMedia 的 change 不一定都派发，但 .app 的尺寸一定会变。
+    // fitBoardSize 用 lastFitSize 收敛，不会因为自己改了棋盘又回调而打转。
+    if (global.ResizeObserver && els.app) {
+      new global.ResizeObserver(function () {
+        var w = els.app.clientWidth;
+        // 只有宽度变化才值得重算：地址栏收放、紧凑档切换改的是高度，
+        // 跟着重算会让棋盘尺寸在手势中途抖动。
+        if (w === lastAppWidth) return;
+        lastAppWidth = w;
+        fitSignature = '';
+        requestBoardFit();
+      }).observe(els.app);
+    }
+
+    // 只有宽度变化才重算棋盘尺寸：手机地址栏收放只改高度，
+    // 跟着它改棋盘会让正拖到一半的手势突然失去参照。
+    global.addEventListener('resize', function () {
+      if (global.innerWidth !== stableVw) {
+        fitSignature = '';
+        requestBoardFit();
+      }
     });
+
+    var coarseQuery = global.matchMedia && global.matchMedia('(pointer: coarse)');
+    if (coarseQuery && coarseQuery.addEventListener) {
+      coarseQuery.addEventListener('change', function (event) {
+        fitSignature = '';
+        if (event.matches) requestBoardFit();
+        else els.board.style.removeProperty('max-width');
+      });
+    }
   }
 
   /* ---------- 启动 ---------- */
@@ -3131,4 +3343,5 @@
   }
 
   init();
+  requestBoardFit();
 })(window);

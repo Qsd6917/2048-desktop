@@ -769,6 +769,16 @@ body {
   inset: 0;
   /* 压在方向提示的洗光之上，否则提示时数字会被一起洗白 */
   z-index: 1;
+  /*
+   * 手指拖动时整层做 translate3d 跟手，提前升到合成层，避免每次
+   * pointermove 都触发布局/重绘。is-dragging 由控制器加，抬手即摘。
+   */
+  will-change: transform;
+}
+
+.tile-layer.is-dragging {
+  /* 跟手必须零缓动：任何 transition 都会让方块慢半拍 */
+  transition: none;
 }
 
 /* ---------- 障碍 ---------- */
@@ -1617,7 +1627,7 @@ body.is-overlay-open #fx {
 
 /* ---------- 矮窗口：压缩固定开销，把高度让给棋盘 ---------- */
 
-@media (max-height: 780px) {
+@media (max-height: 780px) and (pointer: fine) {
   body {
     /* 同样要给安全区留位置：小屏手机既矮又有刘海 */
     padding-top: max(16px, env(safe-area-inset-top));
@@ -1657,7 +1667,7 @@ body.is-overlay-open #fx {
   }
 }
 
-@media (max-height: 660px) {
+@media (max-height: 660px) and (pointer: fine) {
   .brand h1 {
     font-size: 30px;
   }
@@ -1680,14 +1690,15 @@ body.is-overlay-open #fx {
 
 /*
  * 桌面按钮 32px / chip 24px 是给鼠标用的，手指按上去误触率很高。
- * 这里把主要触控目标抬到 36–40px，放大后的固定开销由 --chrome-h 从棋盘
- * 宽度里让出来，所以棋盘仍会跟着视口高度缩放，不会被顶出屏幕。
+ * 这里把主要触控目标抬到 36–40px。棋盘边长不再靠猜固定开销的
+ * --chrome-h 公式，改由 app.js 实测棋盘外占用后写 max-width（见 fitBoardSize）；
+ * 因此触屏下 .app 只受视口宽度约束，上方控件能用满屏宽。
  * 只用 pointer: coarse 作判据：桌面把窗口拉窄不该改变按钮尺寸，
  * 也不会动到 test/integration.e2e.js 里 320px 窄屏的既有几何断言。
  */
 @media (pointer: coarse) {
-  :root {
-    --chrome-h: 500px;
+  .app {
+    width: min(100%, 500px);
   }
 
   .hint--keys { display: none; }
@@ -1728,36 +1739,36 @@ body.is-overlay-open #fx {
   .footer { margin-top: 10px; }
 }
 
-/* 小屏手机再压一档：标题、面板和按钮一起瘦身，尽量把棋盘留在首屏 */
-@media (pointer: coarse) and (max-height: 720px) {
-  :root {
-    --chrome-h: 440px;
-  }
-
-  body {
+/*
+ * 小屏手机的紧凑档：由 app.js 按「稳定视口高度」加 body.is-compact。
+ * 不用 @media (max-height) 是因为手机地址栏收放会跨过阈值，
+ * 正拖到一半时按钮/间距突然换一档，棋盘参照会跟着跳。
+ */
+@media (pointer: coarse) {
+  body.is-compact {
     padding-top: max(12px, env(safe-area-inset-top));
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
-  .brand h1 { font-size: 26px; }
-  .hint { font-size: 10px; }
-  .header { margin-bottom: 4px; }
+  body.is-compact .brand h1 { font-size: 26px; }
+  body.is-compact .hint { font-size: 10px; }
+  body.is-compact .header { margin-bottom: 4px; }
 
-  .hud-item { padding: 3px 3px 4px; }
-  .controls { margin-bottom: 5px; }
-  .daily-bar { margin-bottom: 5px; }
+  body.is-compact .hud-item { padding: 3px 3px 4px; }
+  body.is-compact .controls { margin-bottom: 5px; }
+  body.is-compact .daily-bar { margin-bottom: 5px; }
 
-  .btn { height: 36px; font-size: 12.5px; }
-  .btn--chip { height: 30px; }
-  .btn--switch { height: 34px; }
+  body.is-compact .btn { height: 36px; font-size: 12.5px; }
+  body.is-compact .btn--chip { height: 30px; }
+  body.is-compact .btn--switch { height: 34px; }
 
-  .settings {
+  body.is-compact .settings {
     gap: 5px 10px;
     padding: 5px 9px 6px;
     margin-bottom: 6px;
   }
 
-  .footer { margin-top: 4px; }
+  body.is-compact .footer { margin-top: 4px; }
 }
 
 /* ---------- 降低动态效果 ---------- */
