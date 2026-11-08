@@ -45,7 +45,8 @@
         <span class="hud-value" id="maxTile"></span>
       </div>
       <!-- 文本由控制器整段写入，标签只能走 ::before，不能放子元素。
-           role="timer" 让 aria-label 真的成为可访问名（它默认 aria-live=off，不会每 200ms 播报） -->
+           role="timer" 让 aria-label 真的成为可访问名（它默认 aria-live=off，不会每 200ms 播报）；
+           静态值只是初值，renderTimer 每次刷新都会把它重写成「剩余时间 mm:ss」 -->
       <div class="hud-item hud-timer" id="timer" role="timer" aria-label="剩余时间" hidden></div>
     </div>
 
@@ -106,9 +107,11 @@
       </div>
     </div>
 
-    <!-- 状态行是读屏唯一能听到的即时反馈（撤销 / 托管 / 连击），必须挂 live region -->
+    <!-- 状态行只负责可视文本；要播报的那一条写进下面的 .sr-only live region。
+         每步的得分 / 步数不进 live region，否则撤销 / 托管 / 连击的反馈会被顶掉 -->
     <footer class="footer">
-      <span id="status" role="status" aria-live="polite">用方向键开始</span>
+      <span id="status">用方向键开始</span>
+      <span class="sr-only" id="statusAnnounce" role="status" aria-live="polite"></span>
     </footer>
   </main>
 

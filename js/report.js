@@ -82,7 +82,7 @@
   };
 
   /** 模式 -> 中文名；顺序与 app.js 的 MODES 一致 */
-  var MODE_LABELS = { classic: '经典', timed: '限时', obstacle: '障碍' };
+  var MODE_LABELS = { classic: '经典', timed: '限时', obstacle: '障碍', duel: '双人' };
 
   /* ---------- 小工具（纯函数） ---------- */
 

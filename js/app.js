@@ -135,6 +135,8 @@
     newGame: document.getElementById('newGame'),
     undo: document.getElementById('undo'),
     status: document.getElementById('status'),
+    // 视觉隐藏的播报节点：每步的得分 / 步数只写可视行，别占满 polite live region
+    statusAnnounce: document.getElementById('statusAnnounce'),
     hint: document.getElementById('hint'),
     autoplay: document.getElementById('autoplay'),
     openSettings: document.getElementById('openSettings'),
@@ -354,8 +356,19 @@
     return settings.size;
   }
 
-  function setStatus(text) {
+  /**
+   * 写状态行。
+   *
+   * 可视文本与播报文本分开：#status 每走一步都要刷新（得分 / 最大 / 步数），
+   * 那是噪声 —— 若整句进 polite live region，就会每 300ms 播报一条，把撤销 / 托管 /
+   * 连击 / 战报这些真正需要读屏听到的反馈顶掉。silent 为真时只写可视节点。
+   *
+   * @param {string} text 状态行文本
+   * @param {boolean} [silent] 只更新可视文本，不触发读屏播报
+   */
+  function setStatus(text, silent) {
     if (els.status) els.status.textContent = text;
+    if (!silent && els.statusAnnounce) els.statusAnnounce.textContent = text;
   }
 
   /** 当前是不是双人对战；模式判断散在十几处，集中成一句好读也好改 */
@@ -504,7 +517,9 @@
     }
     if (streak.current > 0) meta.push('连续 ' + streak.current + ' 天');
 
-    els.dailyBar.hidden = false;
+    // 双人打不了每日挑战：这条信息在双人下没有意义，露出来的按钮还会把人拽回经典。
+    // 常驻的话两条信息条叠加 43px（34 高 + 9 间距），正好把 1280×800 的预算顶穿。
+    els.dailyBar.hidden = isDuel();
     els.dailyDate.textContent = Rng.dateLabel(key);
     els.dailyMeta.textContent = meta.join(' · ');
     els.dailyStart.textContent = state.dailyKey ? '重新开始' : '开始挑战';
@@ -1459,12 +1474,19 @@
       els.timer.hidden = true;
       els.timer.textContent = '';
       els.timer.classList.remove('is-urgent');
+      // 整格收起时把标签退回静态说明，免得读屏沿用上一局残留的秒数
+      els.timer.setAttribute('aria-label', '剩余时间');
       return;
     }
 
     var ms = Math.max(0, Math.round(state.remainingMs));
+    var clock = formatClock(ms);
     els.timer.hidden = false;
-    els.timer.textContent = formatClock(ms);
+    els.timer.textContent = clock;
+    // aria-label 是静态属性，不会跟着 textContent 走：不主动刷新的话，
+    // 可访问名从初始化起恒为「剩余时间」，倒计时数值被它整个挡住。
+    // 归零（00:00）也要照写 —— 那一刻才是最该被听到的状态。
+    els.timer.setAttribute('aria-label', '剩余时间 ' + clock);
     // 归零的那一刻（00:00）仍要保持紧急样式：那时才是真正最该被看见的状态
     els.timer.classList.toggle('is-urgent', ms <= URGENT_MS);
   }
@@ -1640,8 +1662,10 @@
       won: Boolean(data.won),
       keepPlaying: Boolean(data.keepPlaying),
       remainingMs: remaining,
-      // 障碍只可能长在格子里，size² 就是硬上界
-      obstaclesAdded: safeCount(data.obstaclesAdded, size * size),
+      // 障碍一局最多长 size 个（与 maxObstacles() 同一口径），远小于 size²。
+      // 按格数封顶的话，坏档里读到 36 会让 shouldAddObstacle() 恒 false，
+      // 障碍模式在整局里静默失效且没有任何提示。
+      obstaclesAdded: safeCount(data.obstaclesAdded, size),
       moves: moves,
       recorded: recorded,
       recordedMoves: recordedMoves,
@@ -2259,14 +2283,18 @@
     }
 
     saveState();
+    // 每步的得分 / 步数是可视噪声，不进 live region（silent=true）：
+    // 否则每 300ms 一条播报，撤销 / 托管 / 连击的反馈永远听不到。
     if (isDuel()) {
       setStatus(
         '轮到玩家 ' + (state.turn + 1) + ' · 玩家 1 ' + playerScore(0) +
-        ' 分 / 玩家 2 ' + playerScore(1) + ' 分 · 已走 ' + state.moves + ' 步'
+        ' 分 / 玩家 2 ' + playerScore(1) + ' 分 · 已走 ' + state.moves + ' 步',
+        true
       );
     } else {
       setStatus(
-        '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步'
+        '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步',
+        true
       );
     }
 
@@ -2276,7 +2304,8 @@
     if (!isDuel() && state.combo >= COMBO_FX_AT) {
       setStatus(
         '连击 ×' + state.combo + ' · 得分 ' + state.score +
-        ' · 最大 ' + G.maxValue(state.board)
+        ' · 最大 ' + G.maxValue(state.board),
+        true
       );
     }
 
