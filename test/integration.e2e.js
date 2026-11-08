@@ -401,8 +401,11 @@ async function main() {
   console.log('\n[I2] 战报页脚的「第 N 次」与每日条一致');
 
   await wipe();
-  await click('#dailyChallenge');   // attempts +1，每日条与战报页脚都该读这一个数
-  await wait(500);
+  // 同一天点两次：attempts = 2，streak 仍为 1。两数分叉，页脚读错哪个都藏不住。
+  await click('#dailyChallenge');
+  await wait(400);
+  await click('#dailyChallenge');
+  await wait(600);
 
   const reportKey = await evalJs('Game2048Rng.dateKey(new Date())');
   await inject({ daily: reportKey, values: BOARD_WIN_IN_ONE });
@@ -410,6 +413,10 @@ async function main() {
   const barMeta = (await text('#dailyMeta')) || '';
   const barAttempt = /第 (\d+) 次/.exec(barMeta);
   check('每日条显示了「第 N 次」', Boolean(barAttempt), barMeta);
+  // 这是 I2 的区分力前提：N 必须与连续天数不同，否则「页脚读 attempt」与
+  // 「页脚读 streak」都会得到同一个数，用例就抓不住后者。
+  check('每日条的第 N 次已与连续天数分叉（N=2，连续 1 天）',
+    Boolean(barAttempt) && barAttempt[1] === '2' && /连续 1 天/.test(barMeta), barMeta);
 
   // 把 buildModel 包一层记录入参：战报是 canvas，断言只能落在模型字段上。
   // 这里同时验证 app 传给 report 的 daily.attempt 与每日条同源。
@@ -428,36 +435,38 @@ async function main() {
     return 1;
   })()`);
 
-  await withFixedRandom(async () => {
-    await press('ArrowLeft');
-    await wait(700);
-  });
-  check('每日局达成目标后浮层有「保存战报」', (await overlayLabels()).indexOf('保存战报') >= 0,
-    (await overlayLabels()).join(' / '));
+  try {
+    await withFixedRandom(async () => {
+      await press('ArrowLeft');
+      await wait(700);
+    });
+    check('每日局达成目标后浮层有「保存战报」', (await overlayLabels()).indexOf('保存战报') >= 0,
+      (await overlayLabels()).join(' / '));
 
-  const beforeDailySave = await text('#status');
-  check('点了「保存战报」', (await clickOverlay('保存战报')) === true);
-  const dailySaveStatus = await waitStatus(/战报已保存/, beforeDailySave);
-  check('每日局战报保存成功', /战报已保存/.test(dailySaveStatus || ''), dailySaveStatus);
+    const beforeDailySave = await text('#status');
+    check('点了「保存战报」', (await clickOverlay('保存战报')) === true);
+    const dailySaveStatus = await waitStatus(/战报已保存/, beforeDailySave);
+    check('每日局战报保存成功', /战报已保存/.test(dailySaveStatus || ''), dailySaveStatus);
 
-  const dailyModels = JSON.parse(await evalJs('JSON.stringify(window.__reportModels || [])'));
-  const footerAttempt = dailyModels.length
-    ? /第 (\d+) 次$/.exec(dailyModels[0].footer || '')
-    : null;
-  // Task 4 的 buildModel 若改成读 streak / attempts + 1，或 app 的 currentReportData
-  // 换一个来源，这里两处 N 就会对不上（页脚是玩家能看到的同一张卡）。
-  check('战报页脚带「第 N 次」', Boolean(footerAttempt),
-    dailyModels.length ? dailyModels[0].footer : '(没有生成模型)');
-  check('页脚的 N 与每日条一致',
-    Boolean(footerAttempt && barAttempt) &&
-      Number(footerAttempt[1]) === Number(barAttempt[1]),
-    (footerAttempt ? footerAttempt[1] : '?') + ' vs ' + (barAttempt ? barAttempt[1] : '?'));
-  check('app 传给战报的 attempt 也是同一个 N',
-    Boolean(dailyModels.length && barAttempt) &&
-      dailyModels[0].attempt === Number(barAttempt[1]),
-    dailyModels.length ? String(dailyModels[0].attempt) : '(没有生成模型)');
-
-  await evalJs('Game2048Report.buildModel = window.__realBuildModel, 1');
+    const dailyModels = JSON.parse(await evalJs('JSON.stringify(window.__reportModels || [])'));
+    const footerAttempt = dailyModels.length
+      ? /第 (\d+) 次$/.exec(dailyModels[0].footer || '')
+      : null;
+    // Task 4 的 buildModel 若改成读 streak / attempts + 1，或 app 的 currentReportData
+    // 换一个来源，这里两处 N 就会对不上（页脚是玩家能看到的同一张卡）。
+    check('战报页脚带「第 N 次」', Boolean(footerAttempt),
+      dailyModels.length ? dailyModels[0].footer : '(没有生成模型)');
+    check('页脚的 N 与每日条一致（都是 2）',
+      Boolean(footerAttempt && barAttempt) && footerAttempt[1] === '2' &&
+        footerAttempt[1] === barAttempt[1],
+      (footerAttempt ? footerAttempt[1] : '?') + ' vs ' + (barAttempt ? barAttempt[1] : '?'));
+    check('app 传给战报的 attempt 也是同一个 N',
+      Boolean(dailyModels.length && barAttempt) &&
+        dailyModels[0].attempt === Number(barAttempt[1]),
+      dailyModels.length ? String(dailyModels[0].attempt) : '(没有生成模型)');
+  } finally {
+    await evalJs('Game2048Report.buildModel = window.__realBuildModel, 1');
+  }
 
   /* ---------- I3 托管 + 复盘 + 限时 ---------- */
   // 红在哪：Task 2 的抽屉暂停/恢复若把计时与托管拆开，或 Task 1 的 closeSheet 只把
@@ -543,40 +552,34 @@ async function main() {
   check('切回经典后能正常走一步', (await moveOnce()) === true,
     'moves=' + (await savedMoves()));
 
-  // 结算需要确定性的结局：走完这一步后换上一份一步即通关的盘面。
-  // 换盘不会重置模块接线，双人路径若把 report 的依赖弄坏，下面的按钮仍然不会出现。
-  await inject({ values: BOARD_WIN_IN_ONE });
+  // 关键：下面切模式走的是 UI（startNewGame），不 reload —— 双人那一局留在内存里的
+  // 状态（结算闸门、复盘队列、autoplay 标志）都还在。换盘会整页重载、把内存状态冲掉，
+  // 那就只能证明「从存档恢复的经典局能给战报入口」，与既有 e2e 重叠，所以这里不换盘。
+  await evalJs('window.__i4Token = "same-page", 1');
+  await click('#modeGroup [data-mode="timed"]');
+  await wait(700);
 
-  await evalJs(`(function () {
-    window.__reportModels = [];
-    window.__realBuildModel = Game2048Report.buildModel;
-    Game2048Report.buildModel = function (data) {
-      var model = window.__realBuildModel(data);
-      window.__reportModels.push({ footer: model.footer, daily: data && data.daily });
-      return model;
-    };
-    return 1;
-  })()`);
+  // 这条同时是上面那段的前提：token 还在，说明后面的结算断言确实跑在
+  // 「双人那局之后、没有重载」的同一个页面上。
+  check('切模式没有重载页面（双人那局的内存状态仍在）',
+    (await evalJs('window.__i4Token')) === 'same-page',
+    String(await evalJs('window.__i4Token')));
+  check('限时局计时器出现', (await hidden('#timer')) === false);
 
-  await withFixedRandom(async () => {
-    await press('ArrowLeft');
-    await wait(700);
+  // 烧完 3 分钟走 showTimeOverlay：这个结算分支带 reportAction()，
+  // 不需要换盘就能让「保存战报」出现。
+  await withFakeClock(async () => {
+    await wait(1500);
   });
-  check('经典结算重新出现「保存战报」', (await overlayLabels()).indexOf('保存战报') >= 0,
+
+  check('限时烧完触发结算', (await text('#overlayTitle')) === '时间到', await text('#overlayTitle'));
+  check('双人之后限时结算重新出现「保存战报」', (await overlayLabels()).indexOf('保存战报') >= 0,
     (await overlayLabels()).join(' / '));
 
-  const beforeClassicSave = await text('#status');
+  const beforeTimedSave = await text('#status');
   check('点了「保存战报」', (await clickOverlay('保存战报')) === true);
-  const classicSaveStatus = await waitStatus(/战报已保存/, beforeClassicSave);
-  check('双人之后经典战报仍能保存', /战报已保存/.test(classicSaveStatus || ''), classicSaveStatus);
-
-  const classicModels = JSON.parse(await evalJs('JSON.stringify(window.__reportModels || [])'));
-  check('普通局页脚不写「第 N 次」',
-    classicModels.length === 1 && classicModels[0].daily === null &&
-      classicModels[0].footer === '2048 桌面版 · 经典模式',
-    classicModels.length ? classicModels[0].footer + ' / daily=' + JSON.stringify(classicModels[0].daily) : '?');
-
-  await evalJs('Game2048Report.buildModel = window.__realBuildModel, 1');
+  const timedSaveStatus = await waitStatus(/战报已保存/, beforeTimedSave);
+  check('双人之后战报仍能保存（依赖没坏）', /战报已保存/.test(timedSaveStatus || ''), timedSaveStatus);
 
   /* ---------- I5 320px 窄屏 ---------- */
   console.log('\n[I5] 320px：模式按钮 / 双人比分块 / 战报按钮');
@@ -594,10 +597,13 @@ async function main() {
   await wait(700);
 
   const narrow = JSON.parse(await evalJs(`(function () {
+    // 前面的浮层按钮拿过焦点，页面可能已滚到棋盘；几何断言按整页顶部量才稳定
+    window.scrollTo(0, 0);
     function box(el) {
       var r = el.getBoundingClientRect();
       return {
-        left: r.left, right: r.right, width: r.width, height: r.height,
+        left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+        width: r.width, height: r.height,
         scrollWidth: el.scrollWidth, clientWidth: el.clientWidth
       };
     }
@@ -624,7 +630,7 @@ async function main() {
     });
   })()`));
 
-  check('320px 下四个模式按钮都在探测范围内', narrow.chips.length === 4,
+  check('320px 下四个模式按钮都已渲染', narrow.chips.length === 4,
     narrow.chips.map((c) => c.text).join('/'));
 
   const chipClipped = narrow.chips.filter((c) => c.box.scrollWidth > c.box.clientWidth + 1);
@@ -655,6 +661,12 @@ async function main() {
   check('320px 下比分数字没有被截断',
     narrow.blocks.every((b) => b.box.scrollWidth <= b.box.clientWidth + 1),
     narrow.blocks.map((b) => b.box.scrollWidth + '/' + b.box.clientWidth).join(' '));
+  // 横向不重叠还不够：比分块若被状态行/模式条挤下去，纵向会压住下面的控件
+  check('320px 下双人比分块不压到模式条',
+    narrow.blocks[1].box.bottom <= narrow.group.top + 0.5 &&
+      narrow.blocks[0].box.top >= 0,
+    'p2.bottom ' + Math.round(narrow.blocks[1].box.bottom) +
+      ' / group.top ' + Math.round(narrow.group.top));
   check('320px 下没有横向溢出', narrow.docWidth <= narrow.viewWidth,
     narrow.docWidth + ' <= ' + narrow.viewWidth);
 
@@ -767,7 +779,7 @@ async function main() {
     var app = document.getElementById('app').getBoundingClientRect();
     var footer = document.querySelector('.footer').getBoundingClientRect();
     return JSON.stringify({
-      top: board.top, bottom: board.bottom, width: board.width,
+      top: board.top, bottom: board.bottom, width: board.width, height: board.height,
       appWidth: app.width,
       footerBottom: footer.bottom,
       docWidth: document.documentElement.scrollWidth,
@@ -777,10 +789,13 @@ async function main() {
     });
   })()`));
 
-  check('1280×800 下棋盘完整落在视口内',
-    wide.top >= 0 && wide.bottom <= wide.viewHeight + 0.5,
-    Math.round(wide.top) + ' -> ' + Math.round(wide.bottom) + ' / vh ' + wide.viewHeight);
-  check('1280×800 下棋盘不超出容器', wide.width <= wide.appWidth + 1,
+  // 下界不能省：退化成 0×0 的棋盘也能满足「不越界」，那样这条断言就白写了
+  check('1280×800 下棋盘完整落在视口内且尺寸合理',
+    wide.top >= 0 && wide.bottom <= wide.viewHeight + 0.5 && wide.height >= 300,
+    Math.round(wide.top) + ' -> ' + Math.round(wide.bottom) +
+      ' (h ' + Math.round(wide.height) + ') / vh ' + wide.viewHeight);
+  check('1280×800 下棋盘不超出容器并保持可玩尺寸',
+    wide.width <= wide.appWidth + 1 && wide.width >= 300,
     wide.width + ' / app ' + wide.appWidth);
   check('1280×800 下页脚没被挤出视口并整页无纵向滚动',
     wide.footerBottom <= wide.viewHeight + 0.5 && wide.docHeight <= wide.viewHeight + 1,
