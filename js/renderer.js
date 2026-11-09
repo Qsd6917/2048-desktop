@@ -73,11 +73,19 @@
       var cell = (width - pad * 2 - gap * (size - 1)) / size;
       var radius = Math.max(4, Math.round(cell * 0.055));
 
+      // 缩屏时旧坐标不能带着走子过渡滑出新棋盘，否则手机会按越界
+      // 方块自动缩小整页。仅尺寸重算立即定位，正常走子仍保留过渡。
+      var resized = metrics && metrics.width !== width;
+      if (resized) boardEl.classList.add('is-resizing');
       boardEl.style.setProperty('--size', String(size));
       boardEl.style.setProperty('--pad', pad + 'px');
       boardEl.style.setProperty('--gap', gap + 'px');
       boardEl.style.setProperty('--cell', cell + 'px');
       boardEl.style.setProperty('--radius', radius + 'px');
+      if (resized) {
+        void tileEl.offsetWidth;
+        boardEl.classList.remove('is-resizing');
+      }
 
       // 记一份给 getCellCenter / getCellSize 用，免得每次都回读 computedStyle
       metrics = { width: width, pad: pad, gap: gap, cell: cell };

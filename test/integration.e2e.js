@@ -196,6 +196,15 @@ async function main() {
   const click = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)}).click(), 1`);
   const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)}).textContent`);
   const hidden = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)}).hidden`);
+  // 按需保留验收截图；普通回归不产生仓库文件。
+  async function screenshot(name) {
+    if (!process.env.E2E_SCREENSHOT_DIR) return;
+    await wait(300); // 等抽屉与结算的入场动画结束再验收截图。
+    const dir = path.resolve(process.env.E2E_SCREENSHOT_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.writeFileSync(path.join(dir, name + '.png'), Buffer.from(shot.data, 'base64'));
+  }
   const overlayHidden = () => evalJs('document.getElementById("overlay").hidden');
   const autoplayOn = async () =>
     (await evalJs('document.getElementById("autoplay").getAttribute("aria-pressed")')) === 'true';
@@ -877,6 +886,9 @@ async function main() {
       board: { top: board.top, bottom: board.bottom, width: board.width, height: board.height },
       docWidth: document.documentElement.scrollWidth,
       viewWidth: window.innerWidth,
+      layoutWidth: document.documentElement.clientWidth,
+      visualWidth: window.visualViewport ? window.visualViewport.width : window.innerWidth,
+      visualScale: window.visualViewport ? window.visualViewport.scale : 1,
       viewHeight: window.innerHeight
     });
   })()`));
@@ -885,7 +897,16 @@ async function main() {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true
   });
   await wait(500);
+  await reload();
+  check('手机首次加载收起设置且按钮状态一致',
+    await evalJs(`document.getElementById('settingsPanel').hidden &&
+      document.getElementById('openSettings').getAttribute('aria-expanded') === 'false' &&
+      !document.getElementById('openSettings').classList.contains('is-active')`));
+  await screenshot('mobile-390-default');
+  await click('#openSettings');
+  check('手机可手动展开设置', !(await hidden('#settingsPanel')));
   const phone = await phoneProbe();
+  await screenshot('mobile-390-settings');
 
   check('触屏棋盘边长由实测写入（不再靠 CSS 猜固定开销）',
     parseInt(phone.maxWidth, 10) >= 260, phone.maxWidth);
@@ -935,9 +956,13 @@ async function main() {
     width: 360, height: 640, deviceScaleFactor: 2, mobile: true
   });
   await wait(500);
+  const smallExpanded = await phoneProbe();
+  check('360px 展开的设置保持触控尺寸，旋屏不重置用户选择',
+    !(await hidden('#settingsPanel')) && smallExpanded.chipMin >= 28);
+  await click('#openSettings');
   const small = await phoneProbe();
-  check('360×640 下棋盘完整落在首屏、按钮仍够大、无横向溢出',
-    small.mainBtnMin >= 36 && small.chipMin >= 28 &&
+  check('360×640 收起设置后棋盘完整落在首屏、按钮仍够大、无横向溢出',
+    small.mainBtnMin >= 36 &&
       small.board.width >= 260 && small.board.height >= 260 &&
       small.board.top >= 0 && small.board.bottom <= small.viewHeight + 1 &&
       small.docWidth <= small.viewWidth,
@@ -1038,16 +1063,57 @@ async function main() {
   check('抬手后跟手预览已清除', released.dragging === false && released.transform === '',
     released.dragging + ' · ' + released.transform);
 
-  const beforeBurst = await savedMoves();
-  const burstStart = Date.now();
-  const burstDirs = ['left', 'right', 'left', 'right', 'left', 'right', 'left', 'right'];
-  for (let i = 0; i < burstDirs.length; i++) {
-    await touchGesture(burstDirs[i], 45, true);
+  /**
+   * 当前存档盘面上哪些方向推得动。
+   *
+   * 直接复用页面里的 Game2048（与 app 同一份 logic），不在这里另写一套合并规则 ——
+   * 否则规则一改，测试就成了第二份实现。
+   *
+   * @returns {Promise<string[]>} 可走的方向
+   */
+  async function pushableDirs() {
+    return JSON.parse(await evalJs(`(function () {
+      var saved = Game2048Storage.get(Game2048Storage.KEYS.state, null);
+      if (!saved) return '[]';
+      var board = Game2048.boardFromValues(saved.values);
+      var dirs = ['left', 'right', 'up', 'down'];
+      var out = [];
+      for (var i = 0; i < dirs.length; i++) {
+        if (Game2048.computeMove(board, dirs[i]).changed) out.push(dirs[i]);
+      }
+      return JSON.stringify(out);
+    })()`));
   }
-  const burstMs = Date.now() - burstStart;
+
+  // 「不丢步」不等于「8 次手势必定 +8 步」：这个方向推不动时 applyMove 直接返回 false，
+  // 不消耗步数也不留快照（js/app.js:2218）。连滑里撞上一次推不动的 left 是合法空过，
+  // 不是丢步。所以每次手势前先问页面这个方向推不推得动，只对推得动的计一步。
+  const beforeBurst = await savedMoves();
+  const burstDirs = ['left', 'right', 'left', 'right', 'left', 'right', 'left', 'right'];
+  let burstStep = beforeBurst;
+  let burstExpected = 0;   // 按规则该走的总步数
+  let burstSkips = 0;      // 推不动、按规则空过的次数
+  let burstExact = true;   // 每一步的增量都恰好等于该方向该不该走
+  let burstMs = 0;         // 只累计手势本身，不含下面探测可走方向的往返
+  for (let i = 0; i < burstDirs.length; i++) {
+    const open = await pushableDirs();
+    const want = open.indexOf(burstDirs[i]) >= 0 ? 1 : 0;
+    if (!want) burstSkips++;
+    burstExpected += want;
+
+    const gestureStart = Date.now();
+    const step = await touchGesture(burstDirs[i], 45, true);
+    burstMs += Date.now() - gestureStart;
+
+    if (step.moves !== burstStep + want) burstExact = false;
+    burstStep = step.moves;
+  }
   const afterBurst = await savedMoves();
-  check('连续 8 次高频滑动一步不丢', afterBurst === beforeBurst + 8,
-    beforeBurst + ' -> ' + afterBurst);
+  check('连续 8 次高频滑动一步不丢（推不动的方向按规则空过）',
+    burstExact && afterBurst === beforeBurst + burstExpected &&
+      burstSkips < burstDirs.length,
+    beforeBurst + ' -> ' + afterBurst + ' · 该走 ' + burstExpected +
+      ' 步 · 空过 ' + burstSkips + ' 次');
   check('8 步在 1 秒内跑完（没有被 285ms 动画串行拖住）', burstMs < 1000, burstMs + 'ms');
 
   // 地址栏收放只改高度；棋盘尺寸不能跟着抖，否则正拖到一半会失去参照
@@ -1132,6 +1198,12 @@ async function main() {
     });
     await wait(250);
     const p = await phoneProbe();
+    check(pw + 'px 设备视口没有被页面撑宽或缩放',
+      Math.abs(p.viewWidth - pw) <= 1 && Math.abs(p.layoutWidth - pw) <= 1 &&
+        Math.abs(p.visualWidth - pw) <= 1 && p.docWidth <= pw + 1 &&
+        Math.abs(p.visualScale - 1) < 0.01,
+      JSON.stringify({ expected: pw, layout: p.layoutWidth, inner: p.viewWidth,
+        visual: p.visualWidth, content: p.docWidth, scale: p.visualScale }));
     check(pw + '×' + ph + ' 下棋盘可玩、无横向溢出、触控目标达标',
       p.board.width >= 260 && p.board.height >= 260 &&
         p.docWidth <= p.viewWidth && p.mainBtnMin >= 36 && p.chipMin >= 28,
@@ -1139,11 +1211,58 @@ async function main() {
         ' · btn=' + p.mainBtnMin + '/' + p.chipMin);
   }
 
+  await send('Emulation.setDeviceMetricsOverride', {width:320,height:568,deviceScaleFactor:2,mobile:true});
+  for (const mode of ['classic','timed','obstacle','duel']) {
+    for (const size of [4,5,6]) {
+      const values = Array.from({length:size}, () => Array(size).fill(0));
+      values[1][1] = 128;
+      await inject({size,mode,values,score:999999999,players:[555555555,444444444],remainingMs:180000});
+      await click('#openSettings');
+      const p = await phoneProbe();
+      check('320px 长分数 / 设置展开：' + mode + ' ' + size + '×' + size,
+        p.docWidth <= 321 && p.viewWidth <= 321 && Math.abs(p.visualScale - 1) < 0.01 &&
+          p.board.width >= 260 && p.board.width <= 284 && p.chipMin >= 28,
+        JSON.stringify(p));
+      check('长分数完整可读：' + mode + ' ' + size, await evalJs(`Array.from(document.querySelectorAll('.hud-value'))
+        .filter(el=>el.getBoundingClientRect().width>0).every(el=>el.scrollWidth<=el.clientWidth+1)`));
+    }
+  }
+  await screenshot('mobile-320-duel-settings');
+
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await send('Emulation.clearDeviceMetricsOverride');
   await wait(300);
+  await send('Emulation.setDeviceMetricsOverride', {width:1280,height:800,deviceScaleFactor:1,mobile:false});
+  await reload();
+  check('桌面刷新默认展开设置', !(await hidden('#settingsPanel')));
+  await screenshot('desktop-1280');
 
   /* ---------- I8 控制台 ---------- */
+  console.log('\n[I7d] 复盘范围：完整、截断、旧日志与未评分');
+  await inject({ values: CENTER_TILE });
+  for (const sample of [
+    { total: 2, kept: 2, dropped: 0, scored: 2, expected: '已保留 2 步' },
+    { total: 300, kept: 240, dropped: 60, scored: 240, expected: '仅分析最近 240 步，前 60 步未包含' },
+    { total: 300, kept: 240, scored: 240, expected: '仅分析最近 240 步，前 60 步未包含' },
+    { kept: 2, scored: 1, expected: '已评分 1 / 2 步' }
+  ]) {
+    await evalJs(`(function () {
+      var sample = ${JSON.stringify(sample)}, key = Game2048Rng.dateKey(new Date());
+      var log = { version: 1, date: key, moves: [] };
+      for (var i=0; i<sample.kept; i++) log.moves.push({d:'left',v:${JSON.stringify(CENTER_TILE)},g:0,
+        b:i<sample.scored?'left':null,s:i<sample.scored?1:null,t:i<sample.scored?1:null});
+      if ('dropped' in sample) log.dropped = sample.dropped;
+      if ('total' in sample) log.meta = {moves:sample.total,score:1234,maxTile:128};
+      Game2048Storage.set(Game2048Storage.KEYS.review + '.' + key, log);
+    })()`);
+    await click('#reviewOpen');
+    const body = await text('#reviewBody');
+    check('复盘说明统计范围：' + sample.expected, body.includes(sample.expected), body.slice(0,220));
+    check('复盘说明评级与建议基于已评分记录', body.includes('评级、一致性与建议基于已保留且已评分的记录'));
+    if (sample.dropped === 60) await screenshot('desktop-review-truncated');
+    await press('Escape');
+  }
+
   console.log('\n[I8] 控制台');
   const dateKey = await evalJs('Game2048Rng.dateKey(new Date())');
   const longLog = {version:1,date:dateKey,dropped:60,moves:Array.from({length:240},()=>({

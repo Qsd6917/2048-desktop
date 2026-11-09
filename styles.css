@@ -79,17 +79,19 @@ html {
 body {
   margin: 0;
   min-height: 100dvh;
-  padding: 24px 18px 18px;
+  /* 上下留白必须对称：21 + 21 与原 24 + 18 总和相同，页面总高不变 */
+  padding: 21px 18px 21px;
   /* 刘海 / 底部 Home 条：viewport-fit=cover 下 env() 才有值，桌面恒为 0 */
-  padding-top: max(24px, env(safe-area-inset-top));
-  padding-bottom: max(18px, env(safe-area-inset-bottom));
+  padding-top: max(21px, env(safe-area-inset-top));
+  padding-bottom: max(21px, env(safe-area-inset-bottom));
   padding-left: max(18px, env(safe-area-inset-left));
   padding-right: max(18px, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   align-items: center;
   background:
-    radial-gradient(760px 420px at 50% -8%, var(--stage-glow) 0%, rgba(255, 253, 248, 0) 62%),
+    /* 高光的透明停点必须由当前档色推导：写死成 0 档白，高档位深底上会露出白边 */
+    radial-gradient(760px 420px at 50% -8%, var(--stage-glow) 0%, rgb(from var(--stage-glow) r g b / 0) 62%),
     var(--stage-tint);
   /* 档位切换时慢慢晕开；reduce 的媒体块会把过渡整段去掉 */
   transition: background-color 600ms var(--ease-out);
@@ -198,6 +200,11 @@ body {
   align-items: center;
   gap: 1px;
   text-align: center;
+}
+
+.hud.has-long-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .hud-item + .hud-item {
@@ -831,6 +838,8 @@ body {
 }
 
 /* ---------- 方块 ---------- */
+
+.board.is-resizing .tile { transition: none; }
 
 /* 外层只负责位移，内层负责缩放和弹出，两者互不干扰 */
 .tile {
@@ -1643,8 +1652,9 @@ body.is-overlay-open #fx {
 @media (max-height: 780px) and (pointer: fine) {
   body {
     /* 同样要给安全区留位置：小屏手机既矮又有刘海 */
-    padding-top: max(16px, env(safe-area-inset-top));
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    /* 14 + 14 与原 16 + 12 总和相同，上下对称且总高不变 */
+    padding-top: max(14px, env(safe-area-inset-top));
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
     padding-left: max(16px, env(safe-area-inset-left));
     padding-right: max(16px, env(safe-area-inset-right));
   }
@@ -1712,6 +1722,7 @@ body.is-overlay-open #fx {
 @media (pointer: coarse) {
   .app {
     width: min(100%, 500px);
+    min-width: 0;
   }
 
   .hint--keys { display: none; }
@@ -1739,7 +1750,15 @@ body.is-overlay-open #fx {
     font-size: 18px;
   }
 
-  .controls { gap: 7px; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .controls > .btn { flex: 1 0 auto; }
+  .controls--sub > .btn,
+  #autoplay,
+  #openSettings { background-color: rgba(94, 76, 58, 0.055); }
   .daily-bar { height: 40px; }
 
   .settings {
@@ -1759,8 +1778,9 @@ body.is-overlay-open #fx {
  */
 @media (pointer: coarse) {
   body.is-compact {
-    padding-top: max(12px, env(safe-area-inset-top));
-    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    /* 11 + 11 与原 12 + 10 总和相同 */
+    padding-top: max(11px, env(safe-area-inset-top));
+    padding-bottom: max(11px, env(safe-area-inset-bottom));
   }
 
   body.is-compact .brand h1 { font-size: 26px; }

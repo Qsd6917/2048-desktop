@@ -1555,6 +1555,12 @@
     els.undo.disabled = isDuel() || state.history.length === 0;
     els.board.setAttribute('aria-label', settings.size + '×' + settings.size + ' 棋盘');
     renderDuelHud(duel);
+    // 长成绩改为两列，给分数和目标都留出空间，不把其他指标挤成省略号。
+    var hudNumbers = duel ? [els.p1Score, els.p2Score, els.goal, els.maxTile] :
+      [els.score, els.best, els.goal, els.maxTile];
+    els.scoreBox.parentElement.classList.toggle('has-long-values', hudNumbers.some(function (el) {
+      return el && el.textContent.length > 6;
+    }));
     renderStage(maxTile);
     renderTimer();
     requestBoardFit();
@@ -3049,10 +3055,14 @@
 
   function toggleSettingsPanel() {
     var willOpen = els.settingsPanel.hidden;
-    els.settingsPanel.hidden = !willOpen;
-    els.openSettings.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-    els.openSettings.classList.toggle('is-active', willOpen);
+    setSettingsPanelOpen(willOpen);
     requestBoardFit();   // 面板开合改了棋盘之外的占用
+  }
+
+  function setSettingsPanelOpen(open) {
+    els.settingsPanel.hidden = !open;
+    els.openSettings.setAttribute('aria-expanded', open ? 'true' : 'false');
+    els.openSettings.classList.toggle('is-active', open);
   }
 
   /* ---------- 输入 ---------- */
@@ -3313,6 +3323,8 @@
   /* ---------- 启动 ---------- */
 
   function init() {
+    // 只在页面启动时选择默认状态，旋屏与地址栏变化不覆盖用户选择。
+    setSettingsPanelOpen(!isTouchLayout());
     settings = normalizeSettings(Storage.get(Storage.KEYS.settings, null));
     Audio.setEnabled(settings.sound);
     stats = Storage.loadStats();
