@@ -1060,9 +1060,70 @@ async function main() {
   check('视口高度变化（地址栏收放）不改变棋盘尺寸', sizeAfter === sizeBefore,
     sizeBefore + ' -> ' + sizeAfter);
 
+  /* ---------- 手势边界：通过页面 PointerEvent 输入与真实存档观察 ---------- */
+  const pointer = (type, id, dx, dy) => evalJs(`(function () {
+    var board = document.getElementById('board'), r = board.getBoundingClientRect();
+    board.dispatchEvent(new PointerEvent(${JSON.stringify(type)}, {
+      bubbles: true, cancelable: true, pointerType: 'touch', pointerId: ${id}, button: 0,
+      clientX: r.left + r.width / 2 + ${dx || 0}, clientY: r.top + r.height / 2 + ${dy || 0}
+    }));
+    return 1;
+  })()`);
+  const previewGone = () => evalJs(`!document.getElementById('tileLayer').classList.contains('is-dragging') &&
+    !document.getElementById('tileLayer').style.transform`);
+  const CENTER_TILE = [[0,0,0,0],[0,2,0,0],[0,0,0,0],[0,0,0,0]];
+
+  await inject({ values: CENTER_TILE });
+  await pointer('pointerdown', 1);
+  await pointer('pointermove', 1, -45);
+  await pointer('pointerdown', 2, 80);
+  await pointer('pointerup', 2, -80);
+  check('第二根手指不能替换起点或提前落子', (await savedMoves()) === 0);
+  await pointer('pointercancel', 2);
+  await pointer('pointerup', 1, -45);
+  check('其他指针取消不影响第一根手指，最终只走一步', (await savedMoves()) === 1);
+
+  await inject({ values: CENTER_TILE });
+  await pointer('pointerdown', 1);
+  await pointer('pointermove', 1, -45);
+  await pointer('pointermove', 1, 45);
+  await pointer('pointerup', 1, 45);
+  check('同轴反向拖动按抬手净位移向右走', await evalJs(`(function () {
+    var s = Game2048Storage.get(Game2048Storage.KEYS.state);
+    return s.moves === 1 && s.values[1][3] === 2;
+  })()`));
+
+  for (const cancelEvent of ['pointercancel', 'lostpointercapture']) {
+    await inject({ values: CENTER_TILE });
+    await pointer('pointerdown', 1);
+    await pointer('pointermove', 1, -45);
+    await pointer(cancelEvent, 1);
+    await pointer('pointerup', 1, -45);
+    check(cancelEvent + ' 后不落子且预览清空',
+      (await savedMoves()) === 0 && await previewGone());
+  }
+  await inject({ values: CENTER_TILE });
+  await pointer('pointerdown', 1);
+  await pointer('pointermove', 1, -45);
+  await pointer('pointerup', 1, 3);
+  check('拖回阈值内取消走子且预览清空', (await savedMoves()) === 0 && await previewGone());
+
+  for (const selector of ['#newGame', '#dailyChallenge', '#reviewOpen', '#achOpen']) {
+    await inject({ values: CENTER_TILE });
+    await pointer('pointerdown', 1);
+    await pointer('pointermove', 1, -45);
+    await click(selector);
+    if (selector === '#reviewOpen' || selector === '#achOpen') await press('Escape');
+    const count = await savedMoves();
+    await pointer('pointerup', 1, -45);
+    check(selector + ' 清除旧手势，松手不影响新状态',
+      (await savedMoves()) === count && await previewGone());
+  }
+
   /* ---------- I7c 更多机型：小屏 / 主流 / 大屏 / 平板 ---------- */
   console.log('\n[I7c] 更多机型尺寸：320×568 / 375×667 / 412×915 / 430×932 / 768×1024');
-  const phoneSizes = [[320, 568], [375, 667], [412, 915], [430, 932], [768, 1024]];
+  if (await hidden('#settingsPanel')) await click('#openSettings');
+  const phoneSizes = [[320, 568], [360, 640], [375, 667], [390, 844], [412, 915], [430, 932], [844, 390], [768, 1024]];
   for (let i = 0; i < phoneSizes.length; i++) {
     const pw = phoneSizes[i][0];
     const ph = phoneSizes[i][1];

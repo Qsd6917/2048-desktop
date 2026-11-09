@@ -1220,6 +1220,7 @@
 
   function openReview() {
     if (!els.reviewSheet) return;
+    cancelGesture();
 
     // 抽屉互斥：成就开着就先关掉它。焦点与「暂停」都不断档，
     // 由这个面板接手 —— 否则关掉下层会把焦点还给已经被遮住的入口按钮。
@@ -1335,6 +1336,7 @@
   }
 
   function openAchievements() {
+    cancelGesture();
     if (!els.achSheet) return;
 
     // 与复盘同一套互斥：复盘开着就先关掉，焦点与暂停都由这个面板接手续管
@@ -1957,6 +1959,7 @@
    *        供 startDaily 使用；普通重开一律回到 Math.random。
    */
   function startNewGame(options) {
+    cancelGesture();
     var keepDaily = !!options && options.keepDaily === true;
 
     stopCountdown();
@@ -2807,6 +2810,7 @@
   /* ---------- 浮层 ---------- */
 
   function showOverlay(tone, title, text, actions) {
+    cancelGesture();
     els.overlayTitle.textContent = title;
     els.overlayText.textContent = text;
     els.overlayActions.innerHTML = '';
@@ -3110,8 +3114,25 @@
     els.tiles.style.removeProperty('transform');
   }
 
+  /** 先清起点再释放捕获，避免 lostpointercapture 重入或稍后的松手落子。 */
+  function cancelGesture() {
+    var active = pointerStart;
+    pointerStart = null;
+    clearDragPreview();
+    if (active && els.board.releasePointerCapture && els.board.hasPointerCapture) {
+      try {
+        if (els.board.hasPointerCapture(active.id)) els.board.releasePointerCapture(active.id);
+      } catch (err) { /* 浏览器可能已经取消捕获 */ }
+    }
+  }
+
+  function isActivePointer(event) {
+    return pointerStart && event.pointerId === pointerStart.id;
+  }
+
   function onPointerDown(event) {
     if (event.button !== undefined && event.button !== 0) return;
+    if (pointerStart || isLocked() || state.over) return;
     clearDragPreview();
     pointerStart = {
       x: event.clientX,
@@ -3119,7 +3140,6 @@
       id: event.pointerId,
       preview: wantsDragPreview(event),
       axis: null,
-      dir: null,
       boardSize: els.board ? els.board.clientWidth : 0
     };
 
@@ -3141,9 +3161,7 @@
    * 这里只做视觉位移，一步棋仍然只在抬手时落（玩法与交互不变）。
    */
   function onPointerMove(event) {
-    if (!pointerStart || !pointerStart.preview) return;
-    if (event.pointerId !== undefined && pointerStart.id !== undefined &&
-        event.pointerId !== pointerStart.id) return;
+    if (!isActivePointer(event) || !pointerStart.preview) return;
 
     var dx = event.clientX - pointerStart.x;
     var dy = event.clientY - pointerStart.y;
@@ -3153,9 +3171,6 @@
     if (!pointerStart.axis) {
       if (Math.max(ax, ay) < DRAG_LOCK_PX) return;
       pointerStart.axis = ax > ay ? 'x' : 'y';
-      pointerStart.dir = pointerStart.axis === 'x'
-        ? (dx > 0 ? 'right' : 'left')
-        : (dy > 0 ? 'down' : 'up');
     }
 
     var delta = pointerStart.axis === 'x' ? dx : dy;
@@ -3169,21 +3184,18 @@
       'translate3d(' + ox.toFixed(1) + 'px,' + oy.toFixed(1) + 'px,0)';
   }
 
-  function onPointerCancel() {
-    pointerStart = null;
-    clearDragPreview();
+  function onPointerCancel(event) {
+    if (isActivePointer(event)) cancelGesture();
   }
 
   function onPointerUp(event) {
-    if (!pointerStart) return;
+    if (!isActivePointer(event)) return;
 
     var dx = event.clientX - pointerStart.x;
     var dy = event.clientY - pointerStart.y;
     var axis = pointerStart.axis;
-    var dir = pointerStart.dir;
     var preview = pointerStart.preview;
-    pointerStart = null;
-    clearDragPreview();
+    cancelGesture();
 
     var threshold = preview ? SWIPE_THRESHOLD_TOUCH : SWIPE_THRESHOLD;
     var reached = axis
@@ -3191,11 +3203,9 @@
       : Math.max(Math.abs(dx), Math.abs(dy)) >= threshold;
     if (!reached) return;
 
-    if (!dir) {
-      dir = Math.abs(dx) > Math.abs(dy)
-        ? (dx > 0 ? 'right' : 'left')
-        : (dy > 0 ? 'down' : 'up');
-    }
+    // 锁定主轴，不锁定正负方向：反向拖动与预览保持一致。
+    var horizontal = axis ? axis === 'x' : Math.abs(dx) > Math.abs(dy);
+    var dir = horizontal ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
 
     // 触摸这一手走零等待路径：逻辑立刻结算，不等 285ms 动画；
     // 键盘与托管仍走原路径，busy / pendingDir 的语义保持不变。
@@ -3259,8 +3269,7 @@
     els.board.addEventListener('pointermove', onPointerMove);
     els.board.addEventListener('pointerup', onPointerUp);
     els.board.addEventListener('pointercancel', onPointerCancel);
-    // 指针捕获解除只是通知，pointerup 可能紧随其后：只收预览，不抹掉起点
-    els.board.addEventListener('lostpointercapture', clearDragPreview);
+    els.board.addEventListener('lostpointercapture', onPointerCancel);
 
     // 用布局变化兜底：浏览器缩放、旋屏、开发者工具改视口时，
     // resize / matchMedia 的 change 不一定都派发，但 .app 的尺寸一定会变。
