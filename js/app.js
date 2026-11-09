@@ -133,6 +133,8 @@
     p2Block: document.getElementById('p2Block'),
     p1Score: document.getElementById('p1Score'),
     p2Score: document.getElementById('p2Score'),
+    p1Gain: document.getElementById('p1Gain'),
+    p2Gain: document.getElementById('p2Gain'),
     duelBar: document.getElementById('duelBar'),
     turnLabel: document.getElementById('turnLabel'),
     best: document.getElementById('best'),
@@ -1633,12 +1635,28 @@
     }
   }
 
-  function addScore(delta) {
+  /**
+   * 加分浮字：飘在得分那一格的小标签行上，不压数字。
+   *
+   * 双人下总分格是整格收起的，浮字必须落到走子那一方的格子里 ——
+   * 否则分数在屏幕上凭空出现，看不出加给了谁。
+   *
+   * @param {number} delta 本次加的分
+   * @param {number} [playerIndex] 双人下的玩家下标；省略表示写总分格
+   */
+  function addScore(delta, playerIndex) {
     state.score += delta;
-    els.gain.textContent = '+' + delta;
-    els.gain.classList.remove('is-shown');
-    void els.gain.offsetWidth;   // 强制重排，让动画能重播
-    els.gain.classList.add('is-shown');
+
+    var gain = els.gain;
+    if (typeof playerIndex === 'number') {
+      gain = playerIndex === 0 ? els.p1Gain : els.p2Gain;
+    }
+    if (!gain) return;
+
+    gain.textContent = '+' + delta;
+    gain.classList.remove('is-shown');
+    void gain.offsetWidth;   // 强制重排，让动画能重播
+    gain.classList.add('is-shown');
   }
 
   /* ---------- 存档 ---------- */
@@ -2247,10 +2265,15 @@
     enqueueReviewMove(dir, valuesBefore, result.gained);
 
     if (result.gained) {
-      addScore(result.gained);
       // 双人：这一步的得分（含一步多次合并的合计）归当前走子的人。
       // 换人发生在 finishTurn 的判胜之后，所以此刻 state.turn 还是刚走子的人。
-      if (isDuel()) state.players = Duel.attribute(state.players, state.turn, result.gained);
+      // 浮字也一并写到他那一格：总分格在双人下是收起的，写那里等于看不见。
+      if (isDuel()) {
+        addScore(result.gained, state.turn);
+        state.players = Duel.attribute(state.players, state.turn, result.gained);
+      } else {
+        addScore(result.gained);
+      }
     }
     renderHud();
     playMoveSound(result);

@@ -1574,6 +1574,11 @@ async function main() {
     await press('ArrowLeft');
     await wait(900);
     check('玩家 1 一次走子拿满 8 分', (await text('#p1Score')) === '8', await text('#p1Score'));
+    // +N 浮字要落在走子那一方的格子里：总分格在双人下整格收起，写那里等于看不见
+    check('双人加分浮字落在玩家 1 的格子上', (await text('#p1Gain')) === '+8',
+      await text('#p1Gain'));
+    check('双人下总分格的浮字不再被写', (await text('#scoreGain')) === '',
+      JSON.stringify(await text('#scoreGain')));
     check('玩家 2 仍是 0 分', (await text('#p2Score')) === '0', await text('#p2Score'));
     check('走完一步换到玩家 2', (await text('#turnLabel')) === '轮到玩家 2',
       await text('#turnLabel'));
@@ -1583,6 +1588,8 @@ async function main() {
     await press('ArrowDown');   // 左列两个 4 合成 8，这一步归玩家 2
     await wait(900);
     check('玩家 2 走子后拿到 8 分', (await text('#p2Score')) === '8', await text('#p2Score'));
+    check('双人加分浮字落到玩家 2 的格子上', (await text('#p2Gain')) === '+8',
+      await text('#p2Gain'));
     check('玩家 1 保持 8 分', (await text('#p1Score')) === '8', await text('#p1Score'));
     check('再走一步换回玩家 1', (await text('#turnLabel')) === '轮到玩家 1',
       await text('#turnLabel'));

@@ -33,14 +33,17 @@
         <span class="hud-value" id="score">0</span>
         <span class="hud-gain" id="scoreGain" aria-hidden="true"></span>
       </div>
-      <!-- 双人：两人各自累计，当前走子的一方加 is-active -->
+      <!-- 双人：两人各自累计，当前走子的一方加 is-active。
+           各自的 hud-gain 让 +N 浮字落在得分的那一格上，而不是已经收起的总分格 -->
       <div class="hud-item hud-item--duel" id="p1Block" hidden>
         <span class="hud-label">玩家 1</span>
         <span class="hud-value" id="p1Score">0</span>
+        <span class="hud-gain" id="p1Gain" aria-hidden="true"></span>
       </div>
       <div class="hud-item hud-item--duel" id="p2Block" hidden>
         <span class="hud-label">玩家 2</span>
         <span class="hud-value" id="p2Score">0</span>
+        <span class="hud-gain" id="p2Gain" aria-hidden="true"></span>
       </div>
       <div class="hud-item" id="bestBox">
         <span class="hud-label">最高</span>
