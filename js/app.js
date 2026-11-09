@@ -1192,8 +1192,12 @@
     var keepPaused = !!options && options.keepPaused === true;
 
     sheet.hidden = true;
-    // 背景滚动锁属于「还有抽屉开着」：两个抽屉互斥，这里总能正确解除
-    if (!isReviewOpen() && !isAchOpen()) document.body.classList.remove('is-sheet-open');
+    // 背景滚动锁属于「还有抽屉开着」。互斥切换时 keepPaused 为真：
+    // 这一刻旧抽屉已收起、新抽屉还没展开，若在这里摘锁，页面会闪一下可滚动，
+    // 所以把摘锁也交给「接管方」——它必然在 finally 里补上，不存在漏锁。
+    if (!keepPaused && !isReviewOpen() && !isAchOpen()) {
+      document.body.classList.remove('is-sheet-open');
+    }
 
     // 计时与托管的恢复放在同一个开关后面：互斥切换时它们由新面板接管，
     // 这里提前恢复会出现「刚起表就被下一个面板停掉」和「托管在面板背后空转」两种抖动
