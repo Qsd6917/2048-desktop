@@ -318,7 +318,7 @@
      * 存档、战报、HUD 的「得分」都继续按总分走，拆分只发生在展示层与判胜处。
      */
     turn: 0,
-    players: [0, 0]
+    players: emptyPlayers()
   };
 
   /* ---------- 定时器句柄（换局/换设置必须全部清掉） ---------- */
@@ -391,6 +391,19 @@
   /** 双人比分的安全读取（坏值已在 duel.js 里归零） */
   function playerScore(index) {
     return Duel.scoreOf(state.players, index);
+  }
+
+  /**
+   * 一份全新的零分比分表。
+   *
+   * 长度由 Duel.PLAYER_COUNT 决定，不在 app.js 里再写一遍 2：
+   * 人数一旦变，duel.js 的 normalize / attribute / winnerOf 会跟着走，
+   * 而这里若还写死 [0, 0]，新局与读档就会比 normalize 少一格。
+   */
+  function emptyPlayers() {
+    var players = [];
+    for (var i = 0; i < Duel.PLAYER_COUNT; i++) players.push(0);
+    return players;
   }
 
   /** 动画中、结算浮层挡住棋盘、抽屉开着、或这一局已经结束时，都不接受新输入 */
@@ -1694,10 +1707,13 @@
     var limit = MODES[data.mode].timeLimitMs;
     // 所有标量都走 safeCount：非有限数 / 负数归 0，超上界封顶。
     // 只做 Math.floor 挡不住 Infinity 与 1e12（后者会让 rngCount 空转到冻页面）。
+    // 无计时的模式上界是 0，读回的 remaining 必为 0 —— 这不是「时间用完了」，
+    // 而是「这一局没有倒计时」；renderTimer 只认 MODES[...].timeLimitMs，不看这个值。
     var remaining = safeCount(data.remainingMs, limit > 0 ? limit : 0);
 
     var moves = safeCount(data.moves, SAVE_MAX_MOVES);
     var recorded = data.recorded === true;
+    // 上界就是 moves，safeCount 已经钳过；这里再比一次属于死代码，别加回来。
     var recordedMoves = safeCount(data.recordedMoves, moves);
 
     if (typeof data.recorded !== 'boolean') {
@@ -1707,7 +1723,6 @@
       recordedMoves = recorded ? moves : 0;
     }
     if (!recorded) recordedMoves = 0;
-    if (recordedMoves > moves) recordedMoves = moves;
 
     // 旧存档没有 daily/rngCount：按普通局处理，棋盘照常恢复。
     var daily = Rng.isDateKey(data.daily) ? data.daily : null;
@@ -1730,7 +1745,6 @@
     var perfectRecorded = 0;
     if (daily) {
       perfectRecorded = safeCount(data.perfectRecorded, moves);
-      if (perfectRecorded > moves) perfectRecorded = moves;
     }
 
     // 老存档没有 undoUsed 字段：按「这一局没用过撤销」处理，与旧行为一致
@@ -1743,10 +1757,10 @@
     // 不因为缺字段把整盘丢掉；两位玩家的分数与总分同一套 safeCount 口径。
     var turn = safeCount(data.turn, 1);
     var playersIn = Array.isArray(data.players) ? data.players : [];
-    var players = [
-      safeCount(playersIn[0], SAVE_MAX_SCORE),
-      safeCount(playersIn[1], SAVE_MAX_SCORE)
-    ];
+    var players = [];
+    for (var p = 0; p < Duel.PLAYER_COUNT; p++) {
+      players.push(safeCount(playersIn[p], SAVE_MAX_SCORE));
+    }
 
     return {
       size: size,
@@ -1933,7 +1947,7 @@
     state.perfectRecorded = 0;
     // 双人：新局一律玩家 1 先走、两人 0 分；非双人模式下这两个字段不参与逻辑
     state.turn = 0;
-    state.players = [0, 0];
+    state.players = emptyPlayers();
     // 连击属于「这一局的手感」，换局一律从头数
     resetCombo();
     // 上一局的彩带 / 落尘不能落到新棋盘上：通关后立刻「再来一局」是最常见的路径

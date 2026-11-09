@@ -6,7 +6,9 @@
  * 放在这里就能脱离浏览器单测（见 test/duel.test.js），控制器只负责「什么时候调」。
  *
  * 两个约定：
- *   - 分数永远是非负整数。存档手改、负数、NaN / Infinity 一律归 0，不让坏数据污染比分；
+ *   - 分数永远是 0..MAX_SCORE 的整数。存档手改、负数、NaN / Infinity 一律归 0，
+ *     超过 MAX_SCORE 的钳到上界（与 app.js 的 SAVE_MAX_SCORE 同口径），
+ *     不让坏数据污染比分、也不让累加翻成 Infinity；
  *   - 两个玩家固定两人，数组缺位按 0 补齐。回合号只有 0 / 1，越界按 1 处理（与
  *     app.js 读档的 safeCount 口径一致，避免读档与内存里各算一套）。
  */
@@ -24,17 +26,32 @@
   var PLAYER_COUNT = 2;
 
   /**
-   * 把任意来源的分数整理成非负整数。
-   * 与 app.js 的 safeCount 同口径（非有限数 / 负数归 0），只是这里没有上界：
-   * 一局双人的分数由每个玩家的真实合并累加而来，不需要借读档的钳制值。
+   * 单个玩家比分的上界。
+   *
+   * 与 js/app.js 的 SAVE_MAX_SCORE 同口径（当前同为 1e9）：读档时 app.js 用
+   * safeCount(playersIn[i], SAVE_MAX_SCORE) 把比分钳到 1e9，这边若没有上界，
+   * 内存里的比分就会比读档侧宽松，同一份坏数据走两条路径得到两个数。
+   * 改一处必须改两处，否则「内存 / 存档」口径再次分叉。
+   *
+   * 选 1e9 而不是更大：一局真打完的分数离它还有几个数量级，撞到上界只可能是
+   * 手改存档或坏数据，钳住既不影响正常对局，也避免累加成 Infinity 后污染判胜。
+   */
+  var MAX_SCORE = 1e9;
+
+  /**
+   * 把任意来源的分数整理成非负整数，并钳到 MAX_SCORE。
+   * 与 app.js 的 safeCount 同口径：非有限数 / 负数归 0，超过上界取上界。
+   * 上界同时兜住「连续累加」——attribute 每次都先过这里，单步再大也翻不出去。
    *
    * @param {*} value 原始分数
-   * @returns {number} 非负整数
+   * @returns {number} 0..MAX_SCORE 的整数
    */
   function safeScore(value) {
     var number = Number(value);
     if (!isFinite(number) || number <= 0) return 0;
-    return Math.floor(number);
+    number = Math.floor(number);
+    // 钳制放在取整之后：1e9 + 0.5 这类值先落地成整数再比较，结果与 safeCount 一致
+    return number > MAX_SCORE ? MAX_SCORE : number;
   }
 
   /**
@@ -51,18 +68,24 @@
   }
 
   /**
-   * 把玩家分数整理成固定两人的数组。
+   * 把玩家分数整理成固定 PLAYER_COUNT 人的数组。
    * 传入的数组不会被就地修改：调用方可以放心把它当成不可变值。
    *
+   * 长度由 PLAYER_COUNT 驱动而不是写死两个字面量：人数要变时只改上面那个常量，
+   * 这里生成的数组长度就跟着变，读档、HUD、结算拿到的比分位数不会和常量对不上。
+   * （winnerOf 仍按两人写死判胜——它本身就是「双人对战」的语义，不是漏改。）
+   *
    * @param {*} players 原始比分，形如 [p1, p2]
-   * @returns {number[]} 长度为 2 的非负整数数组
+   * @returns {number[]} 长度为 PLAYER_COUNT 的非负整数数组
    */
   function normalize(players) {
     var list = Array.isArray(players) ? players : [];
-    return [
-      safeScore(list[0]),
-      safeScore(list[1])
-    ];
+    var scores = [];
+    for (var i = 0; i < PLAYER_COUNT; i++) {
+      // list[i] 越界时是 undefined，safeScore 会归 0，等于「缺位按 0 补齐」
+      scores.push(safeScore(list[i]));
+    }
+    return scores;
   }
 
   /**
@@ -84,6 +107,10 @@
    * （logic.js 的 computeMove 口径），所以这里只做「归谁」这一件事。
    * 返回新数组而不是就地改：撤销栈、存档快照都不会被后续走子悄悄改写。
    *
+   * 累加结果再过一次 safeScore：normalize 已经保证旧分与 gained 都 <= MAX_SCORE，
+   * 两者相加最多 2 * MAX_SCORE，仍远小于 Number.MAX_SAFE_INTEGER、不会变 Infinity；
+   * 但钳一次才能让「玩家总分」和读档侧的上界真正对齐，否则连打几局就能越过读档允许的范围。
+   *
    * @param {*} players 走这一步之前的比分
    * @param {*} turn 走这一步的人（0 / 1）
    * @param {*} gained 这一步的合并得分
@@ -91,7 +118,8 @@
    */
   function attribute(players, turn, gained) {
     var scores = normalize(players);
-    scores[normalizeTurn(turn)] += safeScore(gained);
+    var seat = normalizeTurn(turn);
+    scores[seat] = safeScore(scores[seat] + safeScore(gained));
     return scores;
   }
 
@@ -123,6 +151,7 @@
 
   return {
     PLAYER_COUNT: PLAYER_COUNT,
+    MAX_SCORE: MAX_SCORE,
     attribute: attribute,
     nextTurn: nextTurn,
     winnerOf: winnerOf,

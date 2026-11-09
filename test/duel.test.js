@@ -99,6 +99,58 @@ group('死局比分比较', () => {
   eq('空数组按 0:0 平局', Duel.winnerOf([]), null);
 });
 
+// safeScore 没有单独导出（对外只暴露比分语义的几个函数），所以行为统一从
+// attribute / winnerOf 的返回值反推：测的就是调用方真实拿到的东西，
+// 不会出现「私有函数对、公开路径错」。
+//
+// 上界值在这里钉死 1e9、刻意不去读 app.js：本文件是 duel.js 的单测，不该依赖另一个
+// 模块（app.js 正被并行修改）。跨文件口径的一致性写在 duel.js 的常量注释里。
+group('分数上界与人数（与 app.js 的 SAVE_MAX_SCORE 同口径）', () => {
+  const MAX = Duel.MAX_SCORE;
+
+  // 1e9 必须与 app.js 的 SAVE_MAX_SCORE 一致：改一处必须改两处
+  eq('上界常量是 1e9（与 app.js 的 SAVE_MAX_SCORE 同值）', MAX, 1e9);
+
+  eq('attribute 返回的数组长度等于 PLAYER_COUNT',
+    Duel.attribute([], 0, 0).length, Duel.PLAYER_COUNT);
+  eq('入参不是数组时长度仍是 PLAYER_COUNT',
+    Duel.attribute(null, 1, 0).length, Duel.PLAYER_COUNT);
+  eq('缺位补齐后长度不变',
+    Duel.attribute([7], 0, 0).length, Duel.PLAYER_COUNT);
+
+  eq('超上界的单步得分被钳到上界', Duel.attribute([0, 0], 0, 1e12), [MAX, 0]);
+  // 两边都越过上界时必须钳成同一个数，否则「谁分高」会取决于原始脏值的大小
+  eq('两个超上界比分钳成平局', Duel.winnerOf([1e12, MAX + 5]), null);
+  eq('上界外侧的小数取整后仍被钳住', Duel.attribute([0, 0], 0, MAX + 1.5), [MAX, 0]);
+  // 这两条与「坏输入防护」里的 Infinity / 负分重复，但任务要求 safeScore 的三种坏输入
+  // 在本组内自成一组可读的规格，重复两行比让人跨组拼凑口径更值
+  eq('Infinity 得分归 0', Duel.attribute([0, 0], 0, Infinity), [0, 0]);
+  eq('负数得分归 0', Duel.attribute([0, 0], 0, -1), [0, 0]);
+  eq('正常得分不受钳制影响', Duel.attribute([0, 0], 0, 2048), [2048, 0]);
+
+  // 上界附近再入账：必须停在 MAX，不能靠 JS 浮点自然溢出
+  const nearMax = Duel.attribute([MAX - 10, 0], 0, 100);
+  eq('上界附近累加被钳在上界', nearMax, [MAX, 0]);
+  ok('上界附近累加的结果不是 Infinity', isFinite(nearMax[0]), '实际 ' + nearMax[0]);
+
+  // 连续累加：真溢出会变成 Infinity，之后判胜/显示全被污染
+  let tally = [0, 0];
+  for (let i = 0; i < 100; i++) {
+    tally = Duel.attribute(tally, 0, MAX);
+  }
+  eq('连续 100 次满上界入账仍停在上界', tally, [MAX, 0]);
+  ok('连续累加后仍是有限数', isFinite(tally[0]) && isFinite(tally[1]),
+    '实际 ' + str(tally));
+
+  // 既有契约：normalize / attribute 都不就地修改入参
+  const dirty = [1e12, -1];
+  Duel.attribute(dirty, 0, 4);
+  eq('normalize 不修改入参数组', dirty, [1e12, -1]);
+  const clean = [4, 8];
+  Duel.attribute(clean, 1, 16);
+  eq('合法入参数组也不会被就地改写', clean, [4, 8]);
+});
+
 group('坏输入防护', () => {
   eq('负分不进账', Duel.attribute([0, 0], 0, -8), [0, 0]);
   eq('NaN 不进账', Duel.attribute([0, 0], 0, NaN), [0, 0]);
