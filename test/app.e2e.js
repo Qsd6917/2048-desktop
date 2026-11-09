@@ -1653,6 +1653,10 @@ async function main() {
     await text('#overlayTitle'));
   check('死局文案带两人比分', /玩家 1 8 分 \/ 玩家 2 4 分/.test((await text('#overlayText')) || ''),
     await text('#overlayText'));
+  check('分出胜负的浮层走 win 调性，不是平局', await evalJs(`(function () {
+    var o = document.getElementById('overlay');
+    return o.classList.contains('is-win') && !o.classList.contains('is-draw');
+  })()`));
 
   await loadBoard(BOARD_DUEL_STUCK, 'duel', { players: [6, 6], turn: 0, score: 12 });
   await withFixedRandom(async () => {
@@ -1660,6 +1664,27 @@ async function main() {
     await wait(900);
   });
   check('双人死局同分判平局', (await text('#overlayTitle')) === '平局', await text('#overlayTitle'));
+  // 平局既不写「有人赢了」的 win 色，也不写失败色：单开一档 is-draw 走中性
+  check('平局浮层用 is-draw，不落 win / lose', await evalJs(`(function () {
+    var o = document.getElementById('overlay');
+    return o.classList.contains('is-draw') &&
+      !o.classList.contains('is-win') && !o.classList.contains('is-lose');
+  })()`));
+  check('平局标题色走中性档（--ink-faint），不是胜利金', await evalJs(`(function () {
+    var o = document.getElementById('overlay');
+    var title = document.getElementById('overlayTitle');
+    var draw = getComputedStyle(title).color;
+    o.classList.add('is-win');
+    var gold = getComputedStyle(title).color;
+    o.classList.remove('is-win');
+    // 用一个临时节点读 --ink-faint 的解析值：平局色应当就是它，而不是碰巧和金色不同
+    var probe = document.createElement('span');
+    probe.style.color = 'var(--ink-faint)';
+    document.body.appendChild(probe);
+    var neutral = getComputedStyle(probe).color;
+    document.body.removeChild(probe);
+    return draw !== gold && draw === neutral;
+  })()`));
 
   // 胜负：合出目标值的一方获胜，判定必须发生在换人之前
   const statsBeforeDuelWin = await stats();

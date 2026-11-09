@@ -2007,7 +2007,7 @@
     finalizeReview();   // 每日局结算时补算评分并落盘（内部自带条件与幂等）
     renderHud();
 
-    if (reason === 'win') {
+    if (reason === 'win' || reason === 'win-stuck') {
       Audio.win();
       if (fx) fx.confetti(120);   // 全屏彩带
     } else {
@@ -2030,7 +2030,7 @@
 
     if (reason === 'win') showWinOverlay();
     else if (reason === 'time') showTimeOverlay();
-    else showStuckOverlay();
+    else showStuckOverlay();   // 'stuck' 与 'win-stuck' 都是死局浮层，区别只在音效与粒子
 
     saveState();   // over 状态下等价于移除存档
   }
@@ -2784,6 +2784,8 @@
 
     els.overlay.classList.toggle('is-win', tone === 'win');
     els.overlay.classList.toggle('is-lose', tone === 'lose');
+    // 双人死局同分不是失败也不是胜利，单独一档中性色，别刷成任何一方的输赢
+    els.overlay.classList.toggle('is-draw', tone === 'draw');
     els.overlay.hidden = false;
     // 浮层打开时把整个应用抬到粒子层之上（见 styles.css 的 body.is-overlay-open #fx）。
     // 不移动 canvas：它一旦进 .app，震屏的 transform 会让 fixed 变成相对 .app 定位，粒子跟着抖。
@@ -2947,11 +2949,12 @@
     }
 
     // 与 continuePlaying 同理：托管走到目标那一步可能同时无解。
-    // 判定必须放在 bankResult('win') 之前：无解就直接以「死局」结算一次，
-    // 通关仍由 winRecorded 闸门补记（state.won 已为 true，不会漏）；
-    // 反之先放胜利音效/彩带、紧跟一次 stuck 失败音效/落尘，胜利那套当场被压掉。
+    // 判定必须放在 bankResult 之前：无解就直接以「通关即死局」结算一次，
+    // 通关仍由 winRecorded 闸门补记（state.won 已为 true，不会漏）。
+    // 走 'win-stuck' 而不是 'stuck'：这一步确实打成了目标，胜利音效与彩带该有；
+    // 浮层仍是死局那份（这一局到此为止），只是不再叠一层失败音把胜利压掉。
     if (!G.hasMoves(state.board)) {
-      finishGame('stuck');
+      finishGame('win-stuck');
       return;
     }
 

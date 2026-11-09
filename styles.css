@@ -1049,6 +1049,12 @@ body {
   color: #5f554b;
 }
 
+/* 平局（对决模式双方同分）：用更浅的墨色，和胜/负都区分开。
+   必须写在 win / lose 之前：三档特异性相同，胜/负在后才能压过平局色。 */
+.overlay.is-draw .overlay-title {
+  color: var(--ink-faint);
+}
+
 .overlay.is-win .overlay-title {
   color: #bd8a1c;
 }
