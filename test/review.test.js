@@ -98,9 +98,11 @@ group('emptyLog', () => {
     version: 1,
     date: '20261107',
     moves: [],
+    dropped: 0,
     summary: null
   });
   eq('非法日期折成空串', Review.emptyLog(20261107).date, '');
+  eq('新日志没有丢弃任何步', Review.emptyLog('20261107').dropped, 0);
 });
 
 group('appendMove 不修改入参', () => {
@@ -131,6 +133,62 @@ group('appendMove 超上限丢最旧', () => {
   eq('长度封顶 240', log.moves.length, 240);
   eq('保留的是最新的 240 步（首步 g=5）', log.moves[0].g, 5);
   eq('末步是最新一步', log.moves[239].g, 244);
+});
+
+group('appendMove 截断不静默：dropped 计数', () => {
+  const MAX = Review.MAX_MOVES;
+  let log = Review.emptyLog('20261107');
+
+  // 恰好到上限：一步都没丢
+  for (let i = 0; i < MAX; i++) {
+    log = Review.appendMove(log, { d: 'left', v: GRID, g: i, b: null, s: null, t: null });
+  }
+  eq('刚好 240 步时 dropped 仍为 0', log.dropped, 0);
+  eq('刚好 240 步时长度不截断', log.moves.length, MAX);
+
+  // 再灌 37 步：溢出多少就记多少
+  for (let i = MAX; i < MAX + 37; i++) {
+    log = Review.appendMove(log, { d: 'left', v: GRID, g: i, b: null, s: null, t: null });
+  }
+  eq('dropped 记下被丢掉的 37 步', log.dropped, 37);
+  eq('长度仍封顶在 MAX_MOVES', log.moves.length, MAX);
+  eq('第一步是被保留窗口的第一条（g=37）', log.moves[0].g, 37);
+  eq('最后一步仍在日志里', log.moves[log.moves.length - 1].g, MAX + 36);
+  eq('dropped + 长度 = 本局总步数', log.dropped + log.moves.length, MAX + 37);
+
+  // 一次性灌 500 步（每次 append 都只溢出 1 步，逐次累加）
+  let big = Review.emptyLog('20261107');
+  for (let i = 0; i < 500; i++) {
+    big = Review.appendMove(big, { d: 'up', v: GRID, g: i, b: null, s: null, t: null });
+  }
+  eq('长局 dropped 累计到 260', big.dropped, 500 - MAX);
+  eq('长局长度仍是 240', big.moves.length, MAX);
+  eq('长局末步是最新一步', big.moves[MAX - 1].g, 499);
+});
+
+group('appendMove 累加已有的 dropped（读回存档后继续追加）', () => {
+  // 模拟从存档读回的日志：已经丢了 12 步，只剩 3 步
+  const stored = {
+    version: 1,
+    date: '20261107',
+    moves: [
+      { d: 'left', v: GRID, g: 1, b: null, s: null, t: null },
+      { d: 'left', v: GRID, g: 2, b: null, s: null, t: null },
+      { d: 'left', v: GRID, g: 3, b: null, s: null, t: null }
+    ],
+    dropped: 12,
+    summary: null
+  };
+
+  const next = Review.appendMove(stored, { d: 'right', v: GRID, g: 4, b: null, s: null, t: null });
+  eq('dropped 原样带过（没溢出时不涨）', next.dropped, 12);
+  eq('步数正常 +1', next.moves.length, 4);
+  eq('入参 dropped 未被改写', stored.dropped, 12);
+
+  // 老日志没有 dropped 字段：按 0 处理
+  const legacy = { version: 1, date: '20261107', moves: stored.moves.slice(), summary: null };
+  const after = Review.appendMove(legacy, { d: 'right', v: GRID, g: 4, b: null, s: null, t: null });
+  eq('老日志缺 dropped 时按 0 起算', after.dropped, 0);
 });
 
 group('appendMove 容错', () => {
@@ -187,6 +245,52 @@ group('normalizeLog 洗存档数据', () => {
   const capped = Review.normalizeLog({ moves: many }, '20261107');
   eq('同样按 240 步截断', capped.moves.length, 240);
   eq('保留最新一步', capped.moves[239].g, 244);
+  eq('读档时自己截断的 5 步也记进 dropped', capped.dropped, 5);
+});
+
+group('normalizeLog 读回 dropped', () => {
+  const moves = [];
+  for (let i = 0; i < 10; i++) moves.push({ d: 'left', v: GRID, g: i, b: null, s: null, t: null });
+
+  const kept = Review.normalizeLog({ version: 1, date: '20261107', moves: moves, dropped: 42 }, '20261107');
+  eq('带 dropped 的日志保住该值', kept.dropped, 42);
+  eq('步数没到上限时不额外截断', kept.moves.length, 10);
+
+  const legacy = Review.normalizeLog({ version: 1, date: '20261107', moves: moves }, '20261107');
+  eq('老日志没有该字段时读回 0', legacy.dropped, 0);
+
+  eq('非法 dropped（字符串 / 负数 / NaN）一律折成 0',
+    [Review.normalizeLog({ moves: moves, dropped: 'x' }, '20261107').dropped,
+      Review.normalizeLog({ moves: moves, dropped: -3 }, '20261107').dropped,
+      Review.normalizeLog({ moves: moves, dropped: NaN }, '20261107').dropped], [0, 0, 0]);
+  eq('非对象输入 dropped 为 0', Review.normalizeLog(null, '20261107').dropped, 0);
+
+  // 存档本身已截断（dropped=260）又被洗一遍：不能把 dropped 丢掉或翻倍
+  const already = [];
+  for (let i = 0; i < 240; i++) already.push({ d: 'left', v: GRID, g: i, b: null, s: null, t: null });
+  const roundTrip = Review.normalizeLog({ moves: already, dropped: 260 }, '20261107');
+  eq('已在上限内的日志 dropped 原样保留', roundTrip.dropped, 260);
+  eq('长度仍是 240', roundTrip.moves.length, 240);
+
+  // normalizeLog 幂等：洗两遍结果一致
+  eq('洗两遍结果一致', Review.normalizeLog(roundTrip, '20261107'), roundTrip);
+});
+
+group('summarize 用 dropped 补回真实步号', () => {
+  // 日志只留了 3 步，dropped 说前面丢了 7 步 —— meta.moves 缺失时也应按 dropped 补号
+  const rows = [
+    ['left', 'up', 10, 8],
+    ['right', 'up', 10, 7],
+    ['down', 'up', 10, 6]
+  ];
+  const log = logFrom(rows);
+  log.dropped = 7;
+
+  const withMeta = Review.summarize(log, { score: 0, moves: 10, maxTile: 0, won: false });
+  eq('meta.moves 与 dropped 一致时步号不变', withMeta.worst.map((w) => w.index), [10, 9, 8]);
+
+  const noMeta = Review.summarize(log, null);
+  eq('meta.moves 缺失时退回用 dropped 补号', noMeta.worst.map((w) => w.index), [10, 9, 8]);
 });
 
 /* ---------- staleKeys / isUsableSummary ---------- */

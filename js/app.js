@@ -877,6 +877,9 @@
       version: state.reviewLog.version,
       date: state.reviewLog.date,
       moves: state.reviewLog.moves,
+      // 超长局只留最近 MAX_MOVES 步，丢掉的条数必须跟着存：
+      // 不然刷新后这份日志又「看起来覆盖整局」，截断退回静默。
+      dropped: state.reviewLog.dropped,
       summary: summary,
       // meta 不属于 summarize 的返回值，但刷新后要还原指标行，跟着日志一起存
       meta: meta
@@ -1030,6 +1033,14 @@
     parts.push(metricHtml('评级', summary.grade));
     parts.push('</div>');
 
+    var kept = Array.isArray(log.moves) ? log.moves.length : 0;
+    var dropped = Math.max(countOf(log.dropped), Math.max(0, countOf(ctx.reviewMoves) - kept));
+    var coverage = dropped > 0
+      ? '仅分析最近 ' + kept + ' 步，前 ' + dropped + ' 步未包含'
+      : '已保留 ' + kept + ' 步';
+    parts.push('<p class="review-coverage">' + coverage + ' · 已评分 ' +
+      summary.scored + ' / ' + kept + ' 步。评级、一致性与建议基于已保留且已评分的记录。</p>');
+
     if (summary.worst.length) {
       parts.push('<h3 class="review-sub">关键失误</h3>');
       var limit = Math.min(3, summary.worst.length);
@@ -1091,9 +1102,9 @@
     var meta = reviewMetaOf(liveLog, stored, record);
     // 落盘 summary 不可信（{}、手改、写截断），字段不齐就按日志现场重算 ——
     // 下游渲染直接 .toFixed / .length，脏数据会在 stopCountdown() 之后炸掉抽屉。
-    var summary = log.summary && !liveLog && Review.isUsableSummary(log.summary)
-      ? log.summary
-      : Review.summarize(log, meta);
+    // 汇总只扫描已有评分，不运行 AI；按当前记录重算，避免旧 summary 的
+    // scored 与实际保留的记录不一致，误导范围提示。
+    var summary = Review.summarize(log, meta);
 
     // 近 7 日按「不含今天」算：recent 取 8 天，丢掉末位今天
     var history = [];
@@ -1108,6 +1119,7 @@
       score: meta.score,
       maxTile: meta.maxTile,
       moves: meta.moves,
+      reviewMoves: liveLog ? state.moves : (stored && stored.meta ? stored.meta.moves : null),
       history: history,
       streak: streak.current,
       bestToday: record ? record.bestScore : 0
@@ -1491,6 +1503,7 @@
    *
    * 已知下限：复盘日志只留最近 240 步（review.js 的 MAX_MOVES），
    * 超长局更早的步会被裁掉，perfectMoves 因此会少记 —— 只少不多，不会误加。
+   * 裁掉的条数记在 reviewLog.dropped 里，要判断「这份日志是否覆盖整局」读它即可。
    */
   function recordReviewAchievements(summary) {
     if (!summary || !Achievements) return;
@@ -1699,6 +1712,8 @@
       dailyRecorded: state.dailyRecorded,
       dailyRecordedMoves: state.dailyRecordedMoves,
       // 复盘日志跟着局面一起存：刷新后复盘仍覆盖整局。
+      // 超过 240 步的局会丢最旧的步，丢弃数记在 reviewLog.dropped 里（见 persistReview），
+      // 所以「是否覆盖整局」要靠 dropped 判断，不能只看日志在不在。
       // 只有每日局才写，普通局不白增体积（约 15–25KB / 240 步）。
       reviewLog: state.dailyKey ? state.reviewLog : null,
       // 双人：轮到谁 + 两人各自累计。刷新后必须原样接着走，

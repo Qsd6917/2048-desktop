@@ -1320,6 +1320,13 @@ body.is-sheet-open {
 }
 
 /* 复盘底部的「导出今日战报」：与正文用一条细线隔开，按钮撑满面板宽度 */
+.review-coverage {
+  margin: 10px 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-faint);
+}
+
 .review-foot {
   margin: 16px 0 2px;
   padding-top: 12px;

@@ -4,10 +4,11 @@
  * 浏览器里挂到 window.Game2048Review，Node 里通过 module.exports 导出。
  *
  * 一次每日挑战的复盘日志由控制器逐步追加：
- *   { version, date, moves: [{ d, v, g, b, s, t }], summary }
+ *   { version, date, moves: [{ d, v, g, b, s, t }], dropped, summary }
  *   d 玩家方向 / v 走子前的 16 格数值 / g 本次得分
  *   b AI 最佳方向 / s 最佳方向分 / t 玩家实际方向分
  *   b/t 为 null 表示这一步还没算完（异步评分），复盘时按「未评分」跳过。
+ *   dropped 是因超出 MAX_MOVES 被丢掉的最旧步数；> 0 表示这份日志不含整局开局。
  *
  * 所有「写」操作都返回新对象，入参永远不被修改 —— 控制器可以放心先算后存。
  * summarize / analyze 全部规则式生成，同一输入必然同一输出，便于测试。
@@ -27,7 +28,13 @@
   /** 日志结构版本；不兼容时靠它识别 */
   var LOG_VERSION = 1;
 
-  /** 单局最多保留多少步（超出的丢最旧，避免存档无限膨胀） */
+  /**
+   * 单局最多保留多少步。
+   *
+   * 这个上限是存档体积的硬预算（240 步约 15–25KB），不要为了提高「完整性」往上调：
+   * 超出上限时丢弃最旧的步，但丢弃数量必须记进日志的 dropped 字段，
+   * 让下游知道「这份日志不是整局」——静默截断会让复盘/导出声称覆盖整局却少记。
+   */
   var MAX_MOVES = 240;
 
   /** 关键失误最多列几步 */
@@ -140,20 +147,31 @@
 
   /**
    * 一份空日志。
+   *
+   * dropped 从 0 起算：它记录「因为超过 MAX_MOVES 而被丢掉的最旧步数」，
+   * 是累计值而不是本次追加的丢弃数，下游拿它就能判断这份日志是否覆盖整局。
+   *
    * @param {string} dateKey 日期键（YYYYMMDD）
-   * @returns {{version:number, date:string, moves:Array, summary:null}}
+   * @returns {{version:number, date:string, moves:Array, dropped:number, summary:null}}
    */
   function emptyLog(dateKey) {
     return {
       version: LOG_VERSION,
       date: typeof dateKey === 'string' ? dateKey : '',
       moves: [],
+      dropped: 0,
       summary: null
     };
   }
 
   /**
-   * 追加一步，返回新日志；超过 MAX_MOVES 时丢最旧的那一步。
+   * 追加一步，返回新日志；超过 MAX_MOVES 时丢掉最旧的那些步。
+   *
+   * 为什么丢最旧而不是拒绝新步：复盘看的是「这一局最近怎么走的」，
+   * 拒收新步会让日志停在开局、越玩越没参考价值；丢最旧则保住最新走势，
+   * 代价只是前面的步不再完整 —— 所以把丢弃数量累加进 dropped，
+   * 让下游（复盘渲染 / 导出）能明说「这份日志缺了开头 N 步」，而不是静默少记。
+   *
    * 入参 log / entry 都不会被修改（entry.v 也做了深拷贝）。
    *
    * @param {object} log 现有日志
@@ -163,14 +181,22 @@
   function appendMove(log, entry) {
     var base = log && typeof log === 'object' ? log : null;
     var moves = base && Array.isArray(base.moves) ? base.moves.slice() : [];
+    var dropped = toCount(base && base.dropped);
 
     moves.push(copyEntry(entry));
-    if (moves.length > MAX_MOVES) moves = moves.slice(moves.length - MAX_MOVES);
+
+    // 超出上限时把溢出的条数累加进 dropped；老日志没有该字段时按 0 起算
+    if (moves.length > MAX_MOVES) {
+      var overflow = moves.length - MAX_MOVES;
+      moves = moves.slice(overflow);
+      dropped += overflow;
+    }
 
     return {
       version: LOG_VERSION,
       date: base && typeof base.date === 'string' ? base.date : '',
       moves: moves,
+      dropped: dropped,
       summary: base && base.summary && typeof base.summary === 'object' ? base.summary : null
     };
   }
@@ -182,6 +208,9 @@
    * 每条记录都过一遍 copyEntry，存档被手改 / 截断时也不会把脏数据带进复盘或评分。
    * 非法条目保留成空壳而不是过滤掉 —— 下标必须和真实步数一一对应，撤销裁剪才不会错位。
    *
+   * dropped 也要读回来：老日志（这个字段还不存在时写的）按 0 处理，
+   * 这里自己截断掉的条数同样累加进去，避免「读一次存档又悄悄丢几步」。
+   *
    * @param {*} raw 存档里的日志
    * @param {string} dateKey 当前局面的日期键
    * @returns {object} 可直接使用的日志（summary 恒为 null）
@@ -189,10 +218,16 @@
   function normalizeLog(raw, dateKey) {
     var base = raw && typeof raw === 'object' ? raw : null;
     var moves = base && Array.isArray(base.moves) ? base.moves : [];
+    var dropped = toCount(base && base.dropped);
     var out = [];
 
     for (var i = 0; i < moves.length; i++) out.push(copyEntry(moves[i]));
-    if (out.length > MAX_MOVES) out = out.slice(out.length - MAX_MOVES);
+
+    if (out.length > MAX_MOVES) {
+      var overflow = out.length - MAX_MOVES;
+      out = out.slice(overflow);
+      dropped += overflow;
+    }
 
     var date = typeof dateKey === 'string'
       ? dateKey
@@ -202,6 +237,7 @@
       version: LOG_VERSION,
       date: date,
       moves: out,
+      dropped: dropped,
       summary: null
     };
   }
@@ -286,6 +322,9 @@
    * 只统计「已评分」的步（b/s/t 齐全）；没有任何样本时 scored=0、两项指标记 0、
    * 评级记「—」，调用方据此显示空指标而不是崩掉。
    *
+   * 步号要还原成真实步数：日志被截断时用 log.dropped（比 meta.moves 更贴近实际丢弃量）
+   * 补回偏移，否则超长局的「第 N 步」会整段前移。
+   *
    * @param {object} log 复盘日志
    * @param {{score:number, moves:number, maxTile:number, won:boolean}} meta 本局结果
    * @returns {{grade:string, consistency:number, avgLoss:number, matched:number,
@@ -297,7 +336,10 @@
 
     // 日志有上限，前面的步会被丢掉；按「本局总步数」把序号补回去，
     // 这样界面上的「第 N 步」始终是真实步数，不随截断漂移。
+    // dropped 是日志自己记的丢弃数：meta.moves 缺失或偏小时它更可信，取两者较大值。
     var offset = total > moves.length ? total - moves.length : 0;
+    var dropped = toCount(log && log.dropped);
+    if (dropped > offset) offset = dropped;
 
     var scored = 0;
     var matched = 0;

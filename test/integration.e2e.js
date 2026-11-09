@@ -1084,6 +1084,22 @@ async function main() {
 
   /* ---------- I8 控制台 ---------- */
   console.log('\n[I8] 控制台');
+  const dateKey = await evalJs('Game2048Rng.dateKey(new Date())');
+  const longLog = {version:1,date:dateKey,dropped:60,moves:Array.from({length:240},()=>({
+    d:'left',v:CENTER_TILE,g:0,b:'left',s:1,t:1
+  }))};
+  await inject({values:CENTER_TILE,moves:300,daily:dateKey,reviewLog:longLog});
+  await press('ArrowLeft');
+  await wait(500);
+  await press('z'); // 无修饰键不会撤销，随后走正式 Ctrl+Z。
+  await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))`);
+  await press('ArrowRight');
+  await wait(500);
+  await reload();
+  await click('#reviewOpen');
+  check('截断后走子、撤销、重走及刷新保留正确范围',
+    (await text('#reviewBody')).includes('仅分析最近 240 步，前 61 步未包含'));
+
   check('无异常/报错', errors.length === 0, errors.join(' ; ').slice(0, 400));
 
   console.log('\n结果：' + pass + ' passed, ' + fail + ' failed');
