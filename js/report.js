@@ -63,7 +63,8 @@
 
   /**
    * 方块配色（与 js/review.js 的 TILE_COLORS 同值）。
-   * 键名统一用字符串：数值要转成键查表；empty / obstacle / big 是哨兵。
+   * 键名统一用字符串：数值要转成键查表；obstacle / big 是哨兵。
+   * 空格没有哨兵键 —— tileColor 对 0 直接返回 null，不铺假方块。
    */
   var TILE_COLORS = {
     obstacle: { background: '#6d5c4b', color: 'transparent' },
@@ -163,8 +164,11 @@
    *
    * @param {object} data
    *        { date: '2026-11-07', size: 4, score, maxTile, moves, mode: 'classic',
-   *          daily: { streak, attempt } | null, achievements: { unlocked, total },
-   *          values: number[][] }   values 里 0 表示空格
+   *          daily: { streak, attempt } | null, values: number[][] }
+   *        values 里 0 表示空格
+   *        注意：调用方还习惯传 achievements: { unlocked, total }，但战报卡片上
+   *        没有成就位（版式是标题/棋盘/四格统计/页脚），读了也用不上，
+   *        所以这里不再读取该字段 —— 传进来会被忽略。
    * @returns {{title:string, subtitle:string, stats:Array<{label:string, value:string}>,
    *            footer:string, thumb:{size:number, values:number[][]},
    *            date:string, score:number}}
@@ -237,15 +241,74 @@
     ctx.closePath();
   }
 
-  /** 字号收到 maxWidth 以内：大分数 / 四位数方块都不会溢出格子 */
+  /** 最小字号。再小就糊成一团，所以到此为止改为截断文本而不是继续缩。 */
+  var MIN_FONT_SIZE = 10;
+
+  /** 截断时的省略号；单字符，二分时当固定后缀用 */
+  var ELLIPSIS = '…';
+
+  /**
+   * 把「文本 + 字号」一起收进 maxWidth。
+   *
+   * 两步走：
+   *   1. 先缩字号（原行为，正常长度的文本走的就是这条路径，观感完全不变）；
+   *   2. 缩到 MIN_FONT_SIZE 仍放不下时，改为截断 + 省略号。
+   *
+   * 为什么必须连文本一起返回：只返回字号时，触到下限后文本仍然超宽，
+   * 调用方照原样画就会压出卡片 —— 这是 2026-11-07 审计里 deferred 的那条。
+   * 所以调用方必须用返回的 text 去 fillText，不能再拿原始字符串。
+   *
+   * @param {CanvasRenderingContext2D} ctx 量文字宽度用（会改它的 font）
+   * @param {string} text 原始文本
+   * @param {number} maxWidth 可用宽度（CSS 像素）
+   * @param {number} startSize 起始字号
+   * @returns {{size: number, text: string}} 实际字号与真正要画的字符串
+   *          （text 可能已被截断；极端窄的 maxWidth 下 text 会是空串）
+   */
   function fitFontSize(ctx, text, maxWidth, startSize) {
+    var content = String(text === undefined || text === null ? '' : text);
     var size = startSize;
-    while (size > 10) {
+
+    // 第一步：缩字号。与旧实现同口径（旧代码在 10 处不 measure 直接返回，
+    // 这里补测一次 —— 放得下就还是 10，放不下才进入截断，结果对正常文本一致）
+    while (size > MIN_FONT_SIZE) {
       ctx.font = '800 ' + size + 'px ' + FONT;
-      if (ctx.measureText(text).width <= maxWidth) return size;
+      if (ctx.measureText(content).width <= maxWidth) return { size: size, text: content };
       size -= 1;
     }
-    return size;
+
+    // 循环走到这里时 size 就是下限：通常是 MIN_FONT_SIZE；起始字号本来就比它小
+    // （目前两个调用点都不会这样，但别把它放大）时就是起始字号本身
+    ctx.font = '800 ' + size + 'px ' + FONT;
+    if (ctx.measureText(content).width <= maxWidth) {
+      return { size: size, text: content };
+    }
+
+    // 第二步：截断。连省略号都放不下（maxWidth 小到离谱）就干脆不画，
+    // 宁可缺字也不能画出格子 —— 画出去的内容没有回收手段。
+    if (ctx.measureText(ELLIPSIS).width > maxWidth) {
+      return { size: size, text: '' };
+    }
+
+    // 二分最长的「前缀 + 省略号」：宽度随前缀变长单调不减，可以二分
+    var low = 0;
+    var high = content.length;
+    while (low < high) {
+      var mid = Math.ceil((low + high) / 2);
+      if (ctx.measureText(content.slice(0, mid) + ELLIPSIS).width <= maxWidth) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    // 兜底：连字 / 字距可能让宽度不是严格单调，逐字回退保证一定放得下
+    var cut = low;
+    while (cut > 0 && ctx.measureText(content.slice(0, cut) + ELLIPSIS).width > maxWidth) {
+      cut -= 1;
+    }
+
+    return { size: size, text: content.slice(0, cut) + ELLIPSIS };
   }
 
   function drawThumb(ctx, thumb) {
@@ -276,14 +339,15 @@
         ctx.fill();
 
         if (value > 0) {
-          var text = String(value);
-          var fontSize = fitFontSize(ctx, text, cell * 0.78, Math.floor(cell * 0.4));
-          ctx.font = '800 ' + fontSize + 'px ' + FONT;
+          // fitFontSize 连文本一起返回：字号缩到下限仍放不下时它会给出截断版，
+          // 这里必须用 fitted.text 而不是原始 String(value)，否则会画出格子
+          var fitted = fitFontSize(ctx, String(value), cell * 0.78, Math.floor(cell * 0.4));
+          ctx.font = '800 ' + fitted.size + 'px ' + FONT;
           ctx.fillStyle = color.color;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           // 数字视觉重心略高，向下补半像素更像居中
-          ctx.fillText(text, x + cell / 2, y + cell / 2 + 1);
+          ctx.fillText(fitted.text, x + cell / 2, y + cell / 2 + 1);
         }
       }
     }
@@ -315,10 +379,11 @@
       ctx.fillText(String(item.label || ''), x + 14, STATS_TOP + 18);
 
       var value = String(item.value === undefined || item.value === null ? '—' : item.value);
-      var size = fitFontSize(ctx, value, width - 24, 28);
-      ctx.font = '800 ' + size + 'px ' + FONT;
+      // 同上：自定义统计值可能长到 10px 也放不下，用截断后的文本画
+      var fitted = fitFontSize(ctx, value, width - 24, 28);
+      ctx.font = '800 ' + fitted.size + 'px ' + FONT;
       ctx.fillStyle = COLORS.ink;
-      ctx.fillText(value, x + 14, STATS_TOP + 46);
+      ctx.fillText(fitted.text, x + 14, STATS_TOP + 46);
     }
   }
 
@@ -405,10 +470,9 @@
     });
   }
 
+  // 只导出真正有外部调用方的成员：WIDTH / HEIGHT / SCALE 是内部版式常量，
+  // 全仓（js/、test/、index.html）没有任何地方读它们，导出只会变成第二个真相来源。
   return {
-    WIDTH: WIDTH,
-    HEIGHT: HEIGHT,
-    SCALE: SCALE,
     buildModel: buildModel,
     render: render,
     toBlob: toBlob,

@@ -76,6 +76,8 @@ function baseData(extra) {
         (key) => typeof Report[key] !== 'function'
       ),
       []);
+    // 版式常量是内部实现细节，导出后会变成第二个真相来源，2026-11-07 审计后删掉
+    eq('不再导出内部版式常量', ['WIDTH', 'HEIGHT', 'SCALE'].filter((key) => key in Report), []);
     eq('没有 document 时 render 返回 null', Report.render(Report.buildModel(baseData())), null);
     eq('model 为空时 render 也返回 null', Report.render(null), null);
   });
@@ -232,6 +234,83 @@ function baseData(extra) {
       ['2', '4', '8', '16', '32', '64', '128', '256', '512', '1024', '2048', '8192'].every(
         (value) => /^#[0-9a-f]{6}$/i.test(Report.tileColor(Number(value)).background)
       ), true);
+  });
+
+  await group('render：超长文本缩到最小字号后截断，不画出卡片', () => {
+    // 假 canvas / ctx：只记录绘制入参，measureText 按「字符数 × 字号 × 0.62」估算宽度
+    // （等宽近似，足以验证「画出去的宽度 ≤ 可用宽度」这个不变量）
+    const drawn = [];
+    let font = '';
+
+    const ctx = {
+      get font() {
+        return font;
+      },
+      set font(value) {
+        font = value;
+      },
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      textAlign: 'left',
+      textBaseline: 'top',
+      scale() {},
+      fillRect() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      arcTo() {},
+      closePath() {},
+      fill() {},
+      stroke() {},
+      measureText(text) {
+        const matched = /(\d+(?:\.\d+)?)px/.exec(font);
+        const size = matched ? Number(matched[1]) : 10;
+        return { width: String(text).length * size * 0.62 };
+      },
+      fillText(text, x, y) {
+        const matched = /(\d+(?:\.\d+)?)px/.exec(font);
+        const size = matched ? Number(matched[1]) : 10;
+        drawn.push({ text: String(text), size: size, width: String(text).length * size * 0.62, x: x, y: y });
+      }
+    };
+
+    const canvas = { width: 0, height: 0, style: {}, getContext: () => ctx };
+    // render 需要 document；测试里临时造一个，跑完立刻拆掉（本文件开头断言过 Node 没有 document）
+    global.document = { createElement: () => canvas };
+    try {
+      const normal = Report.buildModel(baseData());
+      drawn.length = 0;
+      ok('正常数据能画出来', Report.render(normal) === canvas);
+
+      // 统计卡片宽 = (720 - 48*2 - 12*3) / 4 = 147，左右各留 14 内边距 → 可用 123
+      const STAT_VALUE_MAX_WIDTH = 123;
+      const normalValues = drawn.filter((item) => item.y > 700 && item.size >= 10);
+      ok('正常数值不需要截断', normalValues.every((item) => !item.text.includes('…')));
+
+      // 构造一段 10px 也放不下的文本：200 个字符 → 10px 下约 1240，远超 123
+      const long = Report.buildModel(baseData());
+      long.stats[0].value = '1234567890'.repeat(20);
+
+      drawn.length = 0;
+      ok('超长数据也能画出来', Report.render(long) === canvas);
+
+      const truncated = drawn.filter((item) => item.text.includes('…'));
+      ok('超长文本被省略号截断', truncated.length === 1, '实际截断 ' + truncated.length + ' 处');
+      ok('截断后确实用了最小字号 10px', truncated.every((item) => item.size === 10));
+      ok(
+        '截断后绘制宽度不超过可用宽度',
+        truncated.every((item) => item.width <= STAT_VALUE_MAX_WIDTH),
+        truncated.map((item) => item.text + ' → ' + item.width + 'px').join(', ')
+      );
+      ok(
+        '截断保留了前缀而不是整段丢掉',
+        truncated.every((item) => item.text.length > 1 && item.text.endsWith('…'))
+      );
+    } finally {
+      delete global.document;
+    }
+    eq('测试结束后 document 仍不存在', typeof document, 'undefined');
   });
 
   await group('toBlob：没有 canvas 时安全返回 null', async () => {
