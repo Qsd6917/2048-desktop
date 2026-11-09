@@ -11,7 +11,8 @@
  *   2. 探测通过、正式写入抛 QuotaExceededError → 降级到内存并重写，
  *      不抛异常、返回值不撒谎、刚写的值立刻读得回来；
  *   3. 降级前的历史统计不能在界面上凭空消失；
- *   4. 旧存档 / 坏 JSON / 负数 / 非数字 → loadStats 补默认值，绝不抛。
+ *   4. 旧存档 / 坏 JSON / 负数 / 非数字 → loadStats 补默认值，绝不抛；
+ *   5. 降级后 set 要把新值回灌旧后端，否则配额恢复刷新后读到降级前的旧档。
  */
 'use strict';
 
@@ -363,6 +364,74 @@ console.log('\n降级后 remove 不能让旧档复活');
   }
   ok('旧后端删除抛异常时 remove 也不冒泡', threw === false);
   eq('内存里的那份仍然删掉了', S.get(S.KEYS.state, null), null);
+}
+
+/* ---------- 9. 降级后 set 要把新值回灌旧后端 ---------- */
+
+console.log('\n降级后写入要回灌旧后端（否则刷新读到旧档）');
+
+{
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+
+  S.set(S.KEYS.state, { score: 10 });
+  eq('前置：新值先正常落盘', JSON.parse(ls.getItem('game2048.v2.state')), { score: 10 });
+
+  ls.limitAfter(ls.writes());            // 配额满 → 下一次写入触发降级
+  ok('降级写入本身算成功', S.set(S.KEYS.state, { score: 20 }) === true);
+  eq('降级瞬间内存里是新值', S.get(S.KEYS.state, null), { score: 20 });
+  eq('此刻旧后端还写不进去（前提成立）',
+    JSON.parse(ls.getItem('game2048.v2.state')), { score: 10 });
+
+  ls.limitAfter(1000);                   // 配额恢复（模拟刷新前的环境回暖）
+  ok('配额恢复后继续写成功', S.set(S.KEYS.state, { score: 30 }) === true);
+  eq('新值回灌到了旧后端', JSON.parse(ls.getItem('game2048.v2.state')), { score: 30 });
+  eq('内存那份同样是新值', S.get(S.KEYS.state, null), { score: 30 });
+
+  // 动态键（review.<日期>）不在 KEYS 里，回灌必须同样覆盖
+  const review = { date: '20261108', summary: { scored: 2 } };
+  ok('动态键也能在降级后写入', S.set('review.20261108', review) === true);
+  eq('动态键同样回灌到旧后端',
+    JSON.parse(ls.getItem('game2048.v2.review.20261108')), review);
+
+  // 统计走 saveStats → set，同样要能回灌，否则刷新后历史战绩退回降级前
+  ok('saveStats 在降级后写成功', S.saveStats({ games: 9, bestScore: 8192 }) === true);
+  eq('统计也回灌到旧后端', JSON.parse(ls.getItem('game2048.v2.stats')).games, 9);
+}
+
+{
+  // 从未降级过时不应该多写一份（回灌只在 previousBackend 存在时生效）
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+  S.set(S.KEYS.state, { score: 1 });
+  eq('未降级时一次 set 只写一次真实存储', ls.writes(), 2);   // 1 次探测 + 1 次正式写
+}
+
+{
+  // 旧后端永久写不进去：回灌失败必须被吞掉，内存那份照旧生效
+  const ls = fakeLocalStorage();
+  const S = loadStorage(ls);
+  S.set(S.KEYS.state, { score: 1 });
+
+  ls.limitAfter(ls.writes());
+  S.set(S.KEYS.stats, { games: 1 });     // 触发降级
+  ls.setItem = function () {
+    throw new Error('QuotaExceededError');   // 旧后端此后彻底不可写
+  };
+
+  let threw = false;
+  let result = null;
+  try {
+    result = S.set(S.KEYS.state, { score: 2 });
+  } catch (e) {
+    threw = true;
+  }
+
+  ok('旧后端写入抛异常时 set 不冒泡', threw === false);
+  ok('内存那份仍然算写成功', result === true, '实际 ' + result);
+  eq('内存里读得到新值', S.get(S.KEYS.state, null), { score: 2 });
+  eq('旧后端里仍是降级前的旧值（补偿失败，可接受）',
+    JSON.parse(ls.getItem('game2048.v2.state')), { score: 1 });
 }
 
 /* ---------- 汇总 ---------- */

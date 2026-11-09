@@ -46,11 +46,19 @@
   var backend = null;
 
   /**
-   * 降级前的真实后端（只在降级那一刻记一次）。
+   * 降级前的真实后端：**只在首次降级那一刻记录一次**，之后不再改动。
    *
-   * 降级后本会话不再切回去，写的都是内存；但 `remove` 必须同时删掉旧后端里
-   * 那一份 —— 否则配额恢复后刷新，旧 `state` 会从 localStorage 里「复活」，
-   * 玩家看到一局早就结束的旧盘面。
+   * 降级后本会话不再切回真实 localStorage，读写都落在内存；可旧后端里那份数据
+   * 还留在磁盘上，必须由内存后端替它「代言」，否则配额恢复后刷新会读到降级前的
+   * 旧档。具体有两处补偿，都依赖这个引用：
+   *   - `set` 写成功时同时回灌一份到旧后端（见 mirrorToPrevious）：否则降级会话里
+   *     玩出来的新进度只存在内存，刷新后 localStorage 里仍是旧值 —— 这一局白玩；
+   *   - `remove` 同时删掉旧后端那份（见 remove）：否则已删掉的存档会「复活」。
+   *
+   * 为什么只记一次：若因为异常再进一次降级（当前代码路径不可达，见
+   * degradeToMemory 里的守卫），那一刻的 `backend` 已经是内存后端，覆盖赋值会把
+   * 真实 localStorage 的引用换成内存替身；`previousBackend === backend` 之后，
+   * 上面两处补偿就全部退化成空操作，而且再也无法恢复。
    */
   var previousBackend = null;
 
@@ -109,15 +117,18 @@
    * 优先整体搬迁（连 review.<date> 这类动态键一起带走）；
    * 旧后端不支持 length/key 或中途抛异常时，退回按 KEYS 逐个搬。
    *
-   * 同时记下旧后端引用：降级会话里的 `remove` 要顺手把旧后端那份也删掉，
-   * 否则配额恢复后刷新会读到降级前的旧档（见 previousBackend 注释）。
+   * 同时记下旧后端引用（只在首次降级时记，见 previousBackend 注释）：
+   * 降级会话里的 `set` / `remove` 要拿它做补偿，把新值回灌、把删掉的键删干净。
    */
   function degradeToMemory() {
     var previous = backend;
     var next = createMemoryBackend();
 
     if (previous) {
-      previousBackend = previous;
+      // 只记录一次：已有真实旧后端时不再覆盖。若这里被改成无条件赋值，
+      // 重复降级会把 previousBackend 覆盖成内存后端自身，补偿逻辑随即全部失效。
+      if (!previousBackend) previousBackend = previous;
+
       var migrated = false;
       try {
         migrated = migrateAllKeys(previous);
@@ -174,11 +185,36 @@
   }
 
   /**
+   * 把一次写入回灌到降级前的旧后端（补偿，配合 previousBackend 注释看）。
+   *
+   * 只在「本会话已经降级过」时才有意义：previousBackend 存在，且它不是当前
+   * 后端（降级后再降级会把两者指向同一个内存对象，那时回灌纯属自欺）。
+   *
+   * 旧后端写失败一律吞掉，理由有两条：
+   *   1. 当初就是因为它写不进去（配额满 / 隐私策略收紧）才降级的，此刻再失败
+   *      属于同一类环境问题，调用方既补救不了、也不该被迫处理；
+   *   2. 内存那份已经写成功了，本次会话读得到正确数据，把异常冒到控制器只会
+   *      让游戏卡在报错上，比静默降级更糟。
+   */
+  function mirrorToPrevious(fullKey, payload) {
+    if (!previousBackend || previousBackend === backend) return;
+    try {
+      previousBackend.setItem(fullKey, payload);
+    } catch (e) {
+      /* 旧后端仍不可写：放弃补偿，内存那份已生效 */
+    }
+  }
+
+  /**
    * 写一个 JSON 值。
    *
    * 探测阶段能写、真写时却失败（配额满 / 隐私策略收紧 / 无痕配额为 0）时，
    * 必须降级到内存并立刻重写一次 —— 否则界面显示「已保存」，刷新后却什么都没了。
    * 降级后的写入算成功（本次会话内读得到），真正的持久化失败调用方无法补救。
+   *
+   * 降级会话里每次写成功还要回灌一份到旧后端（mirrorToPrevious）：
+   * 否则新值只活在内存里，配额一恢复、页面一刷新，读到的还是降级前的旧值，
+   * 这一局等于白玩。回灌失败不影响返回值，见该函数的注释。
    *
    * @returns {boolean} 是否写成功（内存降级也算成功）
    */
@@ -192,19 +228,30 @@
     if (payload === undefined) return false;
 
     var fullKey = PREFIX + key;
+    var written = false;
+
+    // 第一步只管「内存/真实后端写进去了没有」。回灌放在 try 外面，
+    // 免得补偿逻辑日后出问题时被误判成后端写失败、把成功谎报成失败。
     try {
       getBackend().setItem(fullKey, payload);
-      return true;
+      written = true;
     } catch (e) {
       degradeToMemory();
     }
 
-    try {
-      getBackend().setItem(fullKey, payload);
-      return true;
-    } catch (e2) {
-      return false;
+    if (!written) {
+      try {
+        getBackend().setItem(fullKey, payload);
+        written = true;
+      } catch (e2) {
+        return false;
+      }
     }
+
+    // 第二步：已经降级过的会话，把新值同步一份回真实 localStorage。
+    // 无论本次是「早就降级了」还是「刚刚才降级」，都要回灌。
+    mirrorToPrevious(fullKey, payload);
+    return true;
   }
 
   /**
