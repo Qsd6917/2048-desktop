@@ -1101,12 +1101,122 @@ async function main() {
     spill.every((s) => s.inLayer === false && /translate3d\(/.test(s.transform)),
     spill.map((s, i) => spillDirs[i] + '=' + s.hit).join(' · '));
 
+  /** 每块方块左上角与「棋盘左上角 + pad + 格号 × (cell + gap)」的最大偏差（px） */
+  const alignWorst = () => evalJs(`(function () {
+    var board = document.getElementById('board');
+    var r = board.getBoundingClientRect();
+    var cs = getComputedStyle(board);
+    var pad = parseFloat(cs.getPropertyValue('--pad'));
+    var gap = parseFloat(cs.getPropertyValue('--gap'));
+    var cell = parseFloat(cs.getPropertyValue('--cell'));
+    var tiles = document.querySelectorAll('#tileLayer .tile');
+    var worst = 0;
+    for (var i = 0; i < tiles.length; i++) {
+      var el = tiles[i];
+      var box = el.getBoundingClientRect();
+      var wantX = r.left + pad + parseFloat(el.style.getPropertyValue('--x')) * (cell + gap);
+      var wantY = r.top + pad + parseFloat(el.style.getPropertyValue('--y')) * (cell + gap);
+      worst = Math.max(worst, Math.abs(box.left - wantX), Math.abs(box.top - wantY));
+    }
+    return Math.round(worst * 10) / 10;
+  })()`).then(Number);
+
+  /** 合并动画每边外扩 0.065 × --cell，必须留在 --pad 里面，否则最外圈弹跳会被裁 */
+  const popMargin = () => evalJs(`(function () {
+    var cs = getComputedStyle(document.getElementById('board'));
+    var pad = parseFloat(cs.getPropertyValue('--pad'));
+    var cell = parseFloat(cs.getPropertyValue('--cell'));
+    return Math.round((pad - cell * 0.065) * 10) / 10;
+  })()`).then(Number);
+
+  /** 静止时点方块中心，命中元素必须仍属于方块层（裁剪层不能挡住点击） */
+  const tileHitAtRest = () => evalJs(`(function () {
+    var el = document.querySelector('#tileLayer .tile');
+    var r = el.getBoundingClientRect();
+    var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+    return !!(hit && hit.closest && hit.closest('#tileLayer'));
+  })()`).then(Boolean);
+
+  const BOARD_6X6 = [
+    [2, 4, 8, 16, 0, 0],
+    [32, 64, 128, 256, 0, 0],
+    [512, 1024, 2, 4, 0, 0],
+    [8, 16, 32, 64, 0, 0],
+    [2, 4, 8, 16, 0, 0],
+    [32, 64, 128, 256, 0, 0]
+  ];
+
+  const geo = [];
+  for (const spot of [
+    { w: 390, h: 844, size: 4, values: BOARD_RIGHT_COL, tag: '390·4×4' },
+    { w: 320, h: 640, size: 4, values: BOARD_RIGHT_COL, tag: '320·4×4' },
+    { w: 390, h: 844, size: 6, values: BOARD_6X6, tag: '390·6×6' }
+  ]) {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: spot.w, height: spot.h, deviceScaleFactor: 2, mobile: true
+    });
+    await wait(300);
+    await inject({ mode: 'classic', size: spot.size, values: spot.values, moves: 0 });
+    await wait(400);
+    geo.push({
+      tag: spot.tag,
+      worst: await alignWorst(),
+      margin: await popMargin(),
+      hit: await tileHitAtRest()
+    });
+  }
+
+  const boardLook = await evalJs(`(function () {
+    var board = document.getElementById('board');
+    var cs = getComputedStyle(board);
+    var r = board.getBoundingClientRect();
+    var root = getComputedStyle(document.documentElement);
+    return JSON.stringify({
+      radius: cs.borderRadius,
+      want: root.getPropertyValue('--radius-lg').trim(),
+      shadow: cs.boxShadow.length > 0,
+      square: Math.abs(r.width - r.height) < 1
+    });
+  })()`).then(JSON.parse);
+
+  check('裁剪层不改变方块坐标（三种配置偏差都是 0）',
+    geo.every((g) => g.worst === 0),
+    geo.map((g) => g.tag + '=' + g.worst + 'px').join(' · '));
+  check('合并动画的弹跳余量留在 --pad 之内（不被裁剪层切掉）',
+    geo.every((g) => g.margin > 0),
+    geo.map((g) => g.tag + '=' + g.margin + 'px').join(' · '));
+  check('静止时方块中心仍命中方块层（裁剪层不挡点击）',
+    geo.every((g) => g.hit === true),
+    geo.map((g) => g.tag + '=' + g.hit).join(' · '));
+  check('棋盘的圆角、外阴影与正方形形状不变',
+    boardLook.radius === boardLook.want && boardLook.shadow === true && boardLook.square === true,
+    boardLook.radius + ' vs ' + boardLook.want + ' · shadow=' + boardLook.shadow + ' · square=' + boardLook.square);
+
+  // 恢复 released 手势要用的起点：390×844、右列盘面、零步
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true
+  });
+  await wait(300);
+  await inject({ mode: 'classic', values: BOARD_RIGHT_COL, moves: 0 });
+  await wait(400);
+
   // 抬手方向要与上面按住的手势一致：另发一次完整手势，读的是「抬手后立刻」
   const released = await touchGesture('left', 60, true);
   check('抬手后不等动画立刻走一步（零延迟结算）', released.moves === 1,
     'moves=' + released.moves);
   check('抬手后跟手预览已清除', released.dragging === false && released.transform === '',
     released.dragging + ' · ' + released.transform);
+
+  // 走一步后方块仍在格子上（负 inset 写错会让整盘偏移一个 --pad，静止时也可能看不出来）。
+  // 放在 released 之后：这段会真走一步，不能污染上面 moves===1 的读数。
+  await evalJs(`(function () {
+    document.getElementById('board').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    return 1;
+  })()`);
+  await wait(500);
+  const movedWorst = await alignWorst();
+  check('走一步后方块仍精确落在格子上', movedWorst === 0, movedWorst + 'px');
 
   /**
    * 当前存档盘面上哪些方向推得动。
