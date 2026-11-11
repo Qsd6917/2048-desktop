@@ -1056,6 +1056,51 @@ async function main() {
     held.dragging + ' · ' + held.transform);
   check('拖动预览只是视觉位移，不提前落子', held.moves === 0, 'moves=' + held.moves);
 
+  /**
+   * 拖动打满后，棋盘外侧取点是否还能命中方块层。
+   *
+   * 不能用 getBoundingClientRect 判断：overflow 只裁绘制、不改几何，rect 永远越界。
+   * 也不能用 closest('.tile')：elementFromPoint 命中的是 .tile-layer 本身。
+   *
+   * @param {string} dir 拖动方向
+   * @returns {Promise<{hit: string, inLayer: boolean, transform: string}>}
+   */
+  const spillProbe = (dir) => evalJs(`(function () {
+    var board = document.getElementById('board');
+    var r = board.getBoundingClientRect();
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var dx = ${dir === 'left' ? -1 : dir === 'right' ? 1 : 0} * 200;
+    var dy = ${dir === 'up' ? -1 : dir === 'down' ? 1 : 0} * 200;
+    var base = { bubbles: true, cancelable: true, pointerId: 11, pointerType: 'touch', button: 0 };
+    function fire(type, cx, cy) {
+      board.dispatchEvent(new PointerEvent(type, Object.assign({ clientX: cx, clientY: cy }, base)));
+    }
+    fire('pointerdown', x, y);
+    fire('pointermove', x + dx, y + dy);
+    var probeX = ${dir === 'left' ? 'r.left - 5' : dir === 'right' ? 'r.right + 5' : 'x'};
+    var probeY = ${dir === 'up' ? 'r.top - 5' : dir === 'down' ? 'r.bottom + 5' : 'y'};
+    var hit = document.elementFromPoint(Math.round(probeX), Math.round(probeY));
+    var inLayer = !!(hit && hit.closest && hit.closest('#tileLayer'));
+    var transform = document.getElementById('tileLayer').style.transform;
+    fire('pointercancel', x + dx, y + dy);
+    return JSON.stringify({
+      hit: hit ? hit.tagName.toLowerCase() : 'null',
+      inLayer: inLayer,
+      transform: transform
+    });
+  })()`).then(JSON.parse);
+
+  const spillDirs = ['left', 'right', 'up', 'down'];
+  const spill = [];
+  for (let i = 0; i < spillDirs.length; i++) {
+    await inject({ mode: 'classic', values: BOARD_RIGHT_COL, moves: 0 });
+    await wait(300);
+    spill.push(await spillProbe(spillDirs[i]));
+  }
+  check('拖动中方块不画到棋盘外（四个方向棋盘外侧 5px 都不再命中方块层）',
+    spill.every((s) => s.inLayer === false && /translate3d\(/.test(s.transform)),
+    spill.map((s, i) => spillDirs[i] + '=' + s.hit).join(' · '));
+
   // 抬手方向要与上面按住的手势一致：另发一次完整手势，读的是「抬手后立刻」
   const released = await touchGesture('left', 60, true);
   check('抬手后不等动画立刻走一步（零延迟结算）', released.moves === 1,

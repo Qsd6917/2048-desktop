@@ -771,9 +771,24 @@ body {
   box-shadow: inset 0 1px 2px rgba(74, 57, 42, 0.1);
 }
 
+/*
+ * 跟手预览会把整层方块 translate3d 拖出棋盘，必须在格子区边界上裁掉。
+ * 裁在 .board 上会连木框一起裁（木框内侧会露出被切的色块），
+ * 裁在 .grid-layer 上又会让方块盖不住网格，所以单独一层。
+ * 这一层只做裁剪，不参与定位：inset 取 --pad，.tile-layer 用负 inset 抵消回去。
+ */
+.tile-clip {
+  position: absolute;
+  inset: var(--pad);
+  z-index: 1;
+  overflow: hidden;
+  border-radius: var(--radius);
+}
+
 .tile-layer {
   position: absolute;
-  inset: 0;
+  /* 外层 .tile-clip 已经内缩了一个 --pad，这里补回去，方块坐标保持不变 */
+  inset: calc(var(--pad) * -1);
   /* 压在方向提示的洗光之上，否则提示时数字会被一起洗白 */
   z-index: 1;
   /*

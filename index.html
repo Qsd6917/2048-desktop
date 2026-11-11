@@ -111,7 +111,9 @@
 
     <div class="board" id="board" tabindex="0" role="application" aria-label="4×4 棋盘">
       <div class="grid-layer" id="gridLayer"></div>
-      <div class="tile-layer" id="tileLayer"></div>
+      <div class="tile-clip" id="tileClip">
+        <div class="tile-layer" id="tileLayer"></div>
+      </div>
       <div class="overlay" id="overlay" role="dialog" aria-modal="true"
            aria-labelledby="overlayTitle" aria-describedby="overlayText" hidden>
         <p class="overlay-title" id="overlayTitle"></p>
