@@ -1017,7 +1017,9 @@ async function main() {
     return JSON.stringify({
       moves: saved ? saved.moves : -1,
       dragging: layer.classList.contains('is-dragging'),
-      transform: layer.style.transform
+      offsets: Array.from(layer.querySelectorAll('.tile'), function (tile) {
+        return { value: Number(tile.textContent), translate: tile.style.translate };
+      })
     });
   })()`).then(JSON.parse);
 
@@ -1034,27 +1036,63 @@ async function main() {
     }
     fire('pointerdown', x, y);
     var samples = [];
-    [10, 25, 45, 70].forEach(function (d) {
+    [4, 10, 25, 45, 70, 120].forEach(function (d) {
       fire('pointermove', x - d, y);
-      var m = /translate3d\\((-?[\\d.]+)px/.exec(layer.style.transform);
-      samples.push(m ? Number(m[1]) : 0);
+      samples.push(parseFloat(layer.querySelector('.tile').style.translate) || 0);
     });
-    fire('pointercancel', x - 70, y);
-    return JSON.stringify({ samples: samples, cleared: layer.style.transform === '' });
+    fire('pointercancel', x - 120, y);
+    var cleared = !Array.from(layer.querySelectorAll('.tile')).some(function (tile) {
+      return tile.style.translate;
+    });
+    return JSON.stringify({ samples: samples, cleared: cleared });
   })()`));
-  check('连续 pointermove 位移逐帧递增（方块实时贴合手指）',
-    follow.samples.length === 4 && follow.samples[0] < 0 &&
-      follow.samples[1] < follow.samples[0] && follow.samples[2] < follow.samples[1] &&
-      follow.samples[3] < follow.samples[2],
+  check('触屏 4px 开始跟手，无障碍时按手指位移 1:1 跟随',
+    follow.samples.join(',') === '-4,-10,-25,-45,-70,-120',
     follow.samples.join(' -> '));
   check('手势取消后跟手预览立即收干净', follow.cleared === true,
     String(follow.cleared));
 
+  await inject({ mode: 'obstacle', values: [[2, 8, 0, 16], [4, -1, 32, 0], [0, 0, 0, 0], [0, 0, 0, 0]] });
   const held = await touchGesture('left', 60, false);
-  check('拖动中方块层实时跟手（is-dragging + 非零位移）',
-    held.dragging === true && /translate3d\(-\d/.test(held.transform),
-    held.dragging + ' · ' + held.transform);
+  const movedTiles = held.offsets.filter((tile) => parseFloat(tile.translate) < 0);
+  check('只预览可移动的 16，贴边、被堵住及障碍隔开的方块保持原位',
+    held.dragging && movedTiles.length === 1 && movedTiles[0].value === 16,
+    JSON.stringify(held.offsets));
   check('拖动预览只是视觉位移，不提前落子', held.moves === 0, 'moves=' + held.moves);
+
+  await inject({ values: [[2, 2, 0, 8], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]] });
+  const tileRect = (value) => evalJs(`JSON.stringify(Array.from(
+    document.querySelectorAll('.tile__inner[data-value="${value}"]'),
+    function (tile) { var r = tile.parentElement.getBoundingClientRect(); return [r.left, r.right]; }
+  ))`).then(JSON.parse);
+  const beforeTouch = await tileRect(8);
+  await touchGesture('left', 75, false);
+  const previewPair = await tileRect(2);
+  check('合并块跟手时数字不会重叠', previewPair[0][1] <= previewPair[1][0]);
+  const beforeRelease = await tileRect(8);
+  const animatedTouch = await touchGesture('left', 75, true);
+  const afterRelease = await tileRect(8);
+  check('松手后从拖动位置继续前进，避免回跳', beforeRelease[0][0] < beforeTouch[0][0] &&
+    afterRelease[0][0] <= beforeRelease[0][0] + 1,
+    beforeTouch[0][0] + ' → ' + beforeRelease[0][0] + ' → ' + afterRelease[0][0]);
+  const touchAnimations = await evalJs(`JSON.stringify(Array.from(
+    document.querySelectorAll('.tile__inner.anim-appear, .tile__inner.anim-merge'),
+    function (tile) {
+      var cs = getComputedStyle(tile);
+      return [cs.animationName, cs.animationDelay, cs.animationDuration];
+    }
+  ))`).then(JSON.parse);
+  check('触屏即时落子，合并和新块在滑动后入场', animatedTouch.moves === 1 &&
+    ['tile-appear', 'tile-merge'].every((name) => touchAnimations.some((a) => a[0] === name && parseFloat(a[1]) > 0)),
+    JSON.stringify(touchAnimations));
+  const touchSlideDuration = await evalJs(`getComputedStyle(
+    document.querySelector('.tile__inner[data-value="8"]').parentElement
+  ).transitionDuration`);
+  check('触屏松手在 70ms 内滑到位，合并与新块入场各不超过 110ms',
+    touchSlideDuration.split(',').every((value) => parseFloat(value) > 0 && parseFloat(value) <= 0.07) &&
+      touchAnimations.length >= 2 &&
+      touchAnimations.every((a) => parseFloat(a[1]) <= 0.07 && parseFloat(a[2]) <= 0.11),
+    touchSlideDuration + ' · ' + JSON.stringify(touchAnimations));
 
   /**
    * 拖动打满后，棋盘外侧取点是否还能命中方块层。
@@ -1063,7 +1101,7 @@ async function main() {
    * 也不能用 closest('.tile')：elementFromPoint 命中的是 .tile-layer 本身。
    *
    * @param {string} dir 拖动方向
-   * @returns {Promise<{hit: string, inLayer: boolean, transform: string}>}
+   * @returns {Promise<{hit: string, inLayer: boolean, dragging: boolean}>}
    */
   const spillProbe = (dir) => evalJs(`(function () {
     var board = document.getElementById('board');
@@ -1081,12 +1119,12 @@ async function main() {
     var probeY = ${dir === 'up' ? 'r.top - 5' : dir === 'down' ? 'r.bottom + 5' : 'y'};
     var hit = document.elementFromPoint(Math.round(probeX), Math.round(probeY));
     var inLayer = !!(hit && hit.closest && hit.closest('#tileLayer'));
-    var transform = document.getElementById('tileLayer').style.transform;
+    var dragging = document.getElementById('tileLayer').classList.contains('is-dragging');
     fire('pointercancel', x + dx, y + dy);
     return JSON.stringify({
       hit: hit ? hit.tagName.toLowerCase() : 'null',
       inLayer: inLayer,
-      transform: transform
+      dragging: dragging
     });
   })()`).then(JSON.parse);
 
@@ -1098,7 +1136,7 @@ async function main() {
     spill.push(await spillProbe(spillDirs[i]));
   }
   check('拖动中方块不画到棋盘外（四个方向棋盘外侧 5px 都不再命中方块层）',
-    spill.every((s) => s.inLayer === false && /translate3d\(/.test(s.transform)),
+    spill.every((s, i) => s.inLayer === false && s.dragging === (spillDirs[i] !== 'right')),
     spill.map((s, i) => spillDirs[i] + '=' + s.hit).join(' · '));
 
   /** 每块方块左上角与「棋盘左上角 + pad + 格号 × (cell + gap)」的最大偏差（px） */
@@ -1204,8 +1242,9 @@ async function main() {
   const released = await touchGesture('left', 60, true);
   check('抬手后不等动画立刻走一步（零延迟结算）', released.moves === 1,
     'moves=' + released.moves);
-  check('抬手后跟手预览已清除', released.dragging === false && released.transform === '',
-    released.dragging + ' · ' + released.transform);
+  check('抬手后跟手预览已清除',
+    released.dragging === false && released.offsets.every((tile) => !tile.translate),
+    JSON.stringify(released.offsets));
 
   // 走一步后方块仍在格子上（负 inset 写错会让整盘偏移一个 --pad，静止时也可能看不出来）。
   // 放在 released 之后：这段会真走一步，不能污染上面 moves===1 的读数。
@@ -1257,14 +1296,14 @@ async function main() {
     burstExpected += want;
 
     const gestureStart = Date.now();
-    const step = await touchGesture(burstDirs[i], 45, true);
+    const step = await touchGesture(burstDirs[i], 10, true);
     burstMs += Date.now() - gestureStart;
 
     if (step.moves !== burstStep + want) burstExact = false;
     burstStep = step.moves;
   }
   const afterBurst = await savedMoves();
-  check('连续 8 次高频滑动一步不丢（推不动的方向按规则空过）',
+  check('连续 8 次 10px 短滑一步不丢（推不动的方向按规则空过）',
     burstExact && afterBurst === beforeBurst + burstExpected &&
       burstSkips < burstDirs.length,
     beforeBurst + ' -> ' + afterBurst + ' · 该走 ' + burstExpected +
@@ -1291,7 +1330,9 @@ async function main() {
     return 1;
   })()`);
   const previewGone = () => evalJs(`!document.getElementById('tileLayer').classList.contains('is-dragging') &&
-    !document.getElementById('tileLayer').style.transform`);
+    !Array.from(document.querySelectorAll('#tileLayer .tile')).some(function (tile) {
+      return tile.style.translate;
+    })`);
   const CENTER_TILE = [[0,0,0,0],[0,2,0,0],[0,0,0,0],[0,0,0,0]];
 
   await inject({ values: CENTER_TILE });
@@ -1340,6 +1381,43 @@ async function main() {
     check(selector + ' 清除旧手势，松手不影响新状态',
       (await savedMoves()) === count && await previewGone());
   }
+
+  /* ---------- 手机状态栏：破纪录与连击 ---------- */
+  await evalJs(`Game2048Storage.saveStats({ bestScore: 4 }), 1`);
+  await inject({ values: [[2, 2, 4, 8], [128, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]] });
+  const feedback = () => evalJs(`JSON.stringify({
+    record: document.getElementById('bestLabel').textContent,
+    status: document.getElementById('status').textContent,
+    combo: document.getElementById('comboStatus').hidden ? '' : document.getElementById('comboStatus').textContent
+  })`).then(JSON.parse);
+  const contrast = await evalJs(`(function () {
+    function luminance(rgb) {
+      var weights = [0.2126, 0.7152, 0.0722];
+      return rgb.match(/\\d+/g).slice(0, 3).reduce(function (sum, value, i) {
+        var x = Number(value) / 255;
+        return sum + weights[i] * (x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4));
+      }, 0);
+    }
+    return Math.min.apply(null, [8, 128].map(function (value) {
+      var style = getComputedStyle(document.querySelector('[data-value="' + value + '"]'));
+      return (luminance(style.backgroundColor) + 0.05) / (luminance(style.color) + 0.05);
+    }));
+  })()`);
+  check('8 与 128 使用高对比度数字', contrast >= 4.5, contrast.toFixed(2));
+  await withFixedRandom(async () => {
+    await touchGesture('left', 60, true);
+    check('追平最高分时不标新纪录', (await feedback()).record === '最高');
+    await touchGesture('left', 60, true);
+    check('超过开局最高分时显示新纪录', (await feedback()).record === '新纪录');
+    await touchGesture('left', 60, true);
+    const combo = await feedback();
+    check('三连击与步数同时可见', combo.status === '已走 3 步' && combo.combo === '连击 ×3',
+      combo.status + ' · ' + combo.combo);
+    await wait(1250);
+    const settled = await feedback();
+    check('连击到期只收起连击，保留步数', settled.combo === '' && settled.status === '已走 3 步',
+      settled.status + ' · ' + settled.combo);
+  });
 
   /* ---------- I7c 更多机型：小屏 / 主流 / 大屏 / 平板 ---------- */
   console.log('\n[I7c] 更多机型尺寸：320×568 / 375×667 / 412×915 / 430×932 / 768×1024');

@@ -20,7 +20,8 @@
 
   var G = global.Game2048;
 
-  var SLIDE_MS = 110;    // 必须和 styles.css 里 .tile 的 transition 时长一致
+  var SLIDE_MS = 110;
+  var TOUCH_SLIDE_MS = 64;
   var POP_MS = 175;      // 合成块弹出动画时长，必须和 .tile__inner.anim-merge 一致
   var STAGGER_MS = 60;   // renderBoard 逐个入场的间隔（新局两个方块错开出现）
   var DEFAULT_SIZE = 4;
@@ -35,6 +36,11 @@
    */
   function prefersReducedMotion() {
     return !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function getSlideDuration(touch) {
+    if (prefersReducedMotion()) return REDUCED_WAIT_MS;
+    return touch ? TOUCH_SLIDE_MS : SLIDE_MS;
   }
 
   /**
@@ -54,9 +60,11 @@
     var size = DEFAULT_SIZE;
     var nodes = new Map();          // tile.id -> { el, inner, text, x, y }
     var obstacleNodes = new Map();  // 'obs-<r>-<c>' -> el
+    var previewNodes = new Set();
     var obstacleKeys = new Set();   // 渲染过的障碍，用来判断哪些是「新增」
     var generation = 0;             // 清空/换尺寸时自增，丢弃过期的动画回调
     var pending = [];               // 未完成的 playMove：{ settle }
+    var touchSlide = null;          // 触屏逻辑已结算，画面可能还在滑动
     var layoutListeners = [];
     var metrics = null;             // 最近一次 layout 的记账：{ width, pad, gap, cell }
 
@@ -183,6 +191,42 @@
       node.y = row;
     }
 
+    function previewMove(slides, dir, distance) {
+      if (!metrics) return;
+      var step = metrics.cell + metrics.gap;
+      var horizontal = dir === 'left' || dir === 'right';
+      var sign = dir === 'left' || dir === 'up' ? -1 : 1;
+      var frontByLine = [];
+      for (var i = 0; i < slides.length; i++) {
+        var slide = slides[i];
+        var node = nodes.get(slide.tile.id);
+        if (!node) continue;
+        var line = horizontal ? node.y : node.x;
+        var start = (horizontal ? node.x : node.y) * step * sign;
+        var end = (horizontal ? slide.col : slide.row) * step * sign;
+        // 规则按移动方向从前往后给出 slides，后块在拖动阶段不能盖住前块。
+        var front = frontByLine[line];
+        var limit = front === undefined ? end : Math.min(end, front - metrics.cell - 1);
+        var offset = Math.max(0, Math.min(distance, limit - start));
+        frontByLine[line] = start + offset;
+        if (offset > 0) {
+          finishTouchSlide(true);
+          var shift = (offset * sign).toFixed(1) + 'px';
+          node.el.style.translate = horizontal ? shift + ' 0px' : '0px ' + shift;
+          previewNodes.add(node.el);
+        } else if (previewNodes.delete(node.el)) {
+          node.el.style.removeProperty('translate');
+        }
+      }
+      tileEl.classList.toggle('is-dragging', previewNodes.size > 0);
+    }
+
+    function clearPreview() {
+      previewNodes.forEach(function (el) { el.style.removeProperty('translate'); });
+      previewNodes.clear();
+      tileEl.classList.remove('is-dragging');
+    }
+
     /**
      * 让一个方块出现在棋盘上。
      * 已存在的方块只更新坐标（靠 CSS transition 滑过去）；
@@ -219,6 +263,20 @@
       nodes.delete(id);
     }
 
+    function finishTouchSlide(interrupted) {
+      if (!touchSlide) return;
+      var slide = touchSlide;
+      touchSlide = null;
+      global.clearTimeout(slide.timer);
+      slide.removeConsumed();
+      if (interrupted) {
+        slide.incoming.forEach(function (node) {
+          node.inner.classList.remove('anim-appear', 'anim-merge');
+          node.inner.style.removeProperty('animation-delay');
+        });
+      }
+    }
+
     /* ---------- 障碍 ---------- */
 
     /** 障碍按 tile 渲染：需要绝对定位，内容是空 div，不设 data-value */
@@ -250,6 +308,10 @@
     function clear() {
       generation += 1;
       clearHint();   // 换局/撤销时方向提示必须一起消失
+      clearPreview();
+      finishTouchSlide(false);
+      tileEl.classList.remove('is-touch-move');
+      tileEl.style.removeProperty('--tile-slide-duration');
 
       var waiting = pending.slice();
       pending.length = 0;
@@ -317,18 +379,29 @@
      * 播放一次移动的全部动画。
      * @param {{slides: Array, merges: Array, spawned?: object, board?: Array}} result
      *        computeMove 的返回值，加上控制器落子后的 spawned 与新棋盘。
-     * @param {{animate?: boolean}} moveOptions animate === false 时直接落到终局状态。
-     * @returns {Promise<boolean>} 动画播完为 true；被 clear()/renderBoard() 取消为 false。
+     * @param {{animate?: boolean, immediate?: boolean}} moveOptions immediate 让触屏立即结算，
+     *        位移和新块入场仍继续播放。
+     * @returns {Promise<boolean>} 可以结算时为 true；被 clear()/renderBoard() 取消为 false。
      *          无论哪条路径都一定会 resolve，不会悬挂。
      */
     function playMove(result, moveOptions) {
       var moveOpts = moveOptions || {};
       var animate = moveOpts.animate !== false;
+      var touch = moveOpts.immediate === true;
       var gen = generation;
+      finishTouchSlide(true);
+      if (previewNodes.size) {
+        // 先提交拖动中的起点，再在同一次渲染中清偏移、写目标格。
+        void tileEl.offsetWidth;
+        clearPreview();
+      }
       // reduce：位置照写（棋盘状态必须正确），只是不等过渡跑完
-      var reduced = animate && prefersReducedMotion();
-      var slideDelay = reduced ? REDUCED_WAIT_MS : SLIDE_MS;
-      var settleDelay = reduced ? REDUCED_WAIT_MS : SLIDE_MS + POP_MS;
+      var slideDelay = getSlideDuration(touch);
+      var reduced = slideDelay === REDUCED_WAIT_MS;
+      var settleDelay = reduced ? REDUCED_WAIT_MS : slideDelay + POP_MS;
+      var showAnimation = animate && !(touch && reduced);
+      tileEl.classList.toggle('is-touch-move', touch);
+      tileEl.style.setProperty('--tile-slide-duration', slideDelay + 'ms');
 
       // 1. 先让方块滑到目标格。computeMove 的 slides 里含「原地不动」的项
       //    （from === to），必须靠节点当前坐标过滤掉，否则每次都跑一遍空动画。
@@ -343,8 +416,10 @@
 
       // 2. 合成出来的新块立刻建好但延迟出场，滑动结束的瞬间才亮起
       var merges = result.merges || [];
+      var incoming = [];
       for (var m = 0; m < merges.length; m++) {
-        mountTile(merges[m].tile, animate ? { merged: true, delay: slideDelay } : { instant: true });
+        incoming.push(mountTile(merges[m].tile,
+          showAnimation ? { merged: true, delay: slideDelay } : { instant: true }));
       }
 
       // 3. 被合并掉的源块等滑动结束后再移除
@@ -359,7 +434,7 @@
 
       // 4. 落一个新子
       if (result.spawned) {
-        mountTile(result.spawned, animate ? { delay: slideDelay } : { instant: true });
+        incoming.push(mountTile(result.spawned, showAnimation ? { delay: slideDelay } : { instant: true }));
       }
 
       // 5. 棋盘上新增的障碍（模式玩法用；本任务不会触发，接口先留好）
@@ -368,8 +443,17 @@
         for (var b = 0; b < blocks.length; b++) mountObstacle(blocks[b]);
       }
 
-      if (!animate) {
+      if (!showAnimation) {
         removeConsumed();
+        return Promise.resolve(true);
+      }
+
+      if (touch) {
+        touchSlide = {
+          timer: global.setTimeout(finishTouchSlide, slideDelay, false),
+          incoming: incoming,
+          removeConsumed: removeConsumed
+        };
         return Promise.resolve(true);
       }
 
@@ -465,6 +549,10 @@
       layout: layout,
       renderBoard: renderBoard,
       playMove: playMove,
+      getSlideDuration: getSlideDuration,
+      previewMove: previewMove,
+      clearPreview: clearPreview,
+      addObstacle: mountObstacle,
       clear: clear,
       flashDirection: flashDirection,
       onLayoutChange: onLayoutChange,

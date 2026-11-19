@@ -193,7 +193,7 @@
   /**
    * 计算一条线里 [start, end) 这一段的结果，写回 next。
    * 段内写回位置从 start 开始 —— 段不从 0 开始时不能假设写指从 0 起。
-   * 没变就返回 false。
+   * next 为空时只记录预览目标，保留源块坐标与方块 ID 序列。
    */
   function compactSegment(board, next, coords, start, end, out) {
     var line = [];
@@ -212,26 +212,30 @@
       var col = target[1];
 
       if (partner && partner.value === current.value) {
-        // 合并时新建方块、读指针跨过两个源块，保证一次移动内不会二次合并
-        var merged = createTile(current.value * 2, row, col);
-        next[row][col] = merged;
         out.slides.push({ tile: current, row: row, col: col });
         out.slides.push({ tile: partner, row: row, col: col });
-        out.merges.push({
-          tile: merged,
-          row: row,
-          col: col,
-          sources: [current, partner],
-          value: merged.value
-        });
-        out.gained += merged.value;
+        if (next) {
+          var merged = createTile(current.value * 2, row, col);
+          next[row][col] = merged;
+          out.merges.push({
+            tile: merged,
+            row: row,
+            col: col,
+            sources: [current, partner],
+            value: merged.value
+          });
+          out.gained += merged.value;
+        }
         out.changed = true;
+        // 同一源块只能合并一次。
         read += 2;
       } else {
         if (current.row !== row || current.col !== col) out.changed = true;
-        next[row][col] = current;
-        current.row = row;
-        current.col = col;
+        if (next) {
+          next[row][col] = current;
+          current.row = row;
+          current.col = col;
+        }
         out.slides.push({ tile: current, row: row, col: col });
         read += 1;
       }
@@ -254,8 +258,15 @@
    *   changed —— 棋盘是否真的变了（位移或合并都算变）
    */
   function computeMove(board, dir) {
+    return collectMove(board, dir, emptyBoard(board.length));
+  }
+
+  function previewSlides(board, dir) {
+    return collectMove(board, dir, null).slides;
+  }
+
+  function collectMove(board, dir, next) {
     var size = board.length;
-    var next = emptyBoard(size);
     var out = { slides: [], merges: [], gained: 0, changed: false };
 
     for (var index = 0; index < size; index++) {
@@ -272,8 +283,10 @@
         }
         // 障碍原样落到新棋盘
         if (blocked) {
-          var obstacleCell = coords[pos];
-          next[obstacleCell[0]][obstacleCell[1]] = board[obstacleCell[0]][obstacleCell[1]];
+          if (next) {
+            var obstacleCell = coords[pos];
+            next[obstacleCell[0]][obstacleCell[1]] = board[obstacleCell[0]][obstacleCell[1]];
+          }
           segStart = pos + 1;
         }
       }
@@ -343,6 +356,7 @@
     addObstacle: addObstacle,
     newGame: newGame,
     computeMove: computeMove,
+    previewSlides: previewSlides,
     hasMoves: hasMoves,
     hasWon: hasWon,
     maxValue: maxValue

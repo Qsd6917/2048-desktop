@@ -528,5 +528,26 @@ group('[14] 退化情况与入参保护', () => {
   eq('合成块落在段内偏移 0', [moved.merges[0].row, moved.merges[0].col], [0, 0]);
 });
 
+group('[15] 滑动预览与落子使用相同的移动规则', () => {
+  const board = G.boardFromValues([
+    [2, 2, -1, 8],
+    [0, 4, 0, 4],
+    [0, 0, 0, 0],
+    [8, 16, 0, 0]
+  ]);
+  const coordinates = G.tiles(board).map((tile) => [tile.row, tile.col]);
+  const previous = G.createTile(2, 0, 0);
+  const destinations = (slides) => slides.map(({ tile, row, col }) => [tile.id, row, col]);
+  const preview = G.previewSlides(board, 'left');
+  eq('预览保留所有源块坐标', G.tiles(board).map((tile) => [tile.row, tile.col]), coordinates);
+  const next = G.createTile(2, 0, 0);
+  eq('预览不分配新方块 ID', next.id, previous.id + 1);
+  eq('障碍右侧的方块及无空格的底行保持原位',
+    preview.filter(({ tile, row, col }) => tile.row === row && tile.col === col)
+      .map(({ tile }) => tile.value), [2, 8, 8, 16]);
+  eq('预览与实际落子的目标坐标一致', destinations(preview),
+    destinations(G.computeMove(board, 'left').slides));
+});
+
 console.log('\n' + (fail === 0 ? '全部通过' : '有失败项') + '：' + pass + ' passed, ' + fail + ' failed\n');
 process.exit(fail === 0 ? 0 : 1);

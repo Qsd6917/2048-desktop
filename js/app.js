@@ -37,13 +37,9 @@
   /** 触摸滑动的最小位移，太小会被当成点击 */
   var SWIPE_THRESHOLD = 24;
   /** 触屏抬手判定用的更小阈值：手指短促一划也该走一步 */
-  var SWIPE_THRESHOLD_TOUCH = 12;
+  var SWIPE_THRESHOLD_TOUCH = 10;
   /** 拖动跟手：超过这个位移就锁定主轴，抬手不再被抖动改方向 */
-  var DRAG_LOCK_PX = 6;
-  /** 方块跟随手指的比例；小于 1 是阻尼，避免整块棋盘被拖飞 */
-  var DRAG_FOLLOW = 0.55;
-  /** 跟手位移上限，按棋盘边长的比例算 */
-  var DRAG_MAX_RATIO = 0.22;
+  var DRAG_LOCK_PX = 4;
   /** 触屏按实测高度定棋盘边长时的下限与留白 */
   var FIT_MIN_PX = 260;
   var FIT_GAP_PX = 6;
@@ -69,8 +65,6 @@
   var EVAL_IDLE_TIMEOUT_MS = 400;
   /** 结算时同步补算剩余评分的总预算 */
   var FLUSH_BUDGET_MS = 60;
-  /** 滑行动画时长：粒子要与合成块弹出的同一帧出现，必须和 renderer 的 SLIDE_MS 一致 */
-  var SLIDE_MS = 110;
   /** 连击清零的空档阈值 */
   var COMBO_GAP_MS = 1200;
   /** 连击上限：再多也只是同一个音，没必要无限涨 */
@@ -138,6 +132,7 @@
     duelBar: document.getElementById('duelBar'),
     turnLabel: document.getElementById('turnLabel'),
     best: document.getElementById('best'),
+    bestLabel: document.getElementById('bestLabel'),
     gain: document.getElementById('scoreGain'),
     goal: document.getElementById('goal'),
     maxTile: document.getElementById('maxTile'),
@@ -149,6 +144,7 @@
     newGame: document.getElementById('newGame'),
     undo: document.getElementById('undo'),
     status: document.getElementById('status'),
+    comboStatus: document.getElementById('comboStatus'),
     // 视觉隐藏的播报节点：每步的得分 / 步数只写可视行，别占满 polite live region
     statusAnnounce: document.getElementById('statusAnnounce'),
     hint: document.getElementById('hint'),
@@ -221,6 +217,8 @@
   /* ---------- 一局的状态 ---------- */
 
   var stats = Storage.loadStats();
+  var recordThreshold = stats.bestScore;
+  var comboStatusTimer = null;
 
   /**
    * 成就档案（Task 4）。与 stats 刻意分开存：stats 是历史战绩，
@@ -1553,6 +1551,11 @@
     var duel = isDuel();
     els.score.textContent = String(state.score);
     els.best.textContent = String(Math.max(stats.bestScore, state.score));
+    var recordLabel = !duel && state.score > recordThreshold ? '新纪录' : '最高';
+    if (els.bestLabel.textContent !== recordLabel) {
+      els.bestLabel.textContent = recordLabel;
+      els.bestLabel.classList.toggle('is-record', state.score > recordThreshold && !duel);
+    }
     els.goal.textContent = String(goalValue());
     els.maxTile.textContent = String(maxTile);
     // 双人没有撤销栈，这里也要知道模式：只按 history 判断会在双人下留一个可点的撤销。
@@ -1979,6 +1982,7 @@
     state.session += 1;
     state.history.length = 0;
     state.score = 0;
+    recordThreshold = stats.bestScore;
     state.won = false;
     state.keepPlaying = false;
     state.over = false;
@@ -2186,6 +2190,16 @@
   function resetCombo() {
     state.combo = 0;
     state.comboAt = 0;
+    global.clearTimeout(comboStatusTimer);
+    comboStatusTimer = null;
+    els.comboStatus.hidden = true;
+  }
+
+  function showCombo(combo) {
+    global.clearTimeout(comboStatusTimer);
+    els.comboStatus.textContent = '连击 ×' + combo;
+    els.comboStatus.hidden = false;
+    comboStatusTimer = global.setTimeout(resetCombo, COMBO_GAP_MS);
   }
 
   /**
@@ -2204,17 +2218,11 @@
       return 0;
     }
 
-    if (state.comboAt && now - state.comboAt >= COMBO_GAP_MS) state.combo = 0;
+    if (state.comboAt && now - state.comboAt >= COMBO_GAP_MS) resetCombo();
 
     state.combo = Math.min(COMBO_MAX, state.combo + 1);
     state.comboAt = now;
     return state.combo;
-  }
-
-  /** 空档超时就清零：只在收尾时检查，慢下来的玩家不该一直挂着连击 */
-  function expireCombo() {
-    if (!state.combo || !state.comboAt) return;
-    if (Date.now() - state.comboAt >= COMBO_GAP_MS) resetCombo();
   }
 
   /**
@@ -2255,13 +2263,13 @@
    * 把合并特效排到滑行结束那一刻，与合成块弹出同帧。
    * 延迟期间可能换局或撤销，回调里按 session 作废。
    */
-  function scheduleMergeFx(merges, combo, session) {
+  function scheduleMergeFx(merges, combo, session, slideDelay) {
     if (!merges.length) return;
 
     global.setTimeout(function () {
       if (state.session !== session) return;
       emitMergeFx(merges, combo);
-    }, SLIDE_MS);
+    }, slideDelay);
   }
 
   /**
@@ -2276,11 +2284,13 @@
 
     var result = G.computeMove(state.board, dir);
     if (!result.changed) return false;   // 这个方向推不动，不消耗步数、不留快照
+    if (pointerStart) cancelGesture();
 
     var session = state.session;
     // 复盘要的是「这一步之前」的盘面，必须赶在接管 result.board 之前取
     var valuesBefore = G.toValues(state.board);
     var combo = bumpCombo(result.merges.length > 0);
+    if (!isDuel() && combo >= COMBO_FX_AT) showCombo(combo);
     recordMoveAchievements(result.merges.length, combo);
 
     pushHistory();
@@ -2305,7 +2315,7 @@
     }
     renderHud();
     playMoveSound(result);
-    scheduleMergeFx(result.merges, combo, session);
+    var touch = !!(moveOpts && moveOpts.touch);
 
     renderer
       .playMove({
@@ -2314,10 +2324,8 @@
         spawned: spawned,
         board: state.board   // 注意：此刻还没有本回合新长出来的障碍
       }, {
-        // 触摸抬手要的是「立刻响应」：animate:false 让 playMove 同步完成 DOM 收尾并
-        // 立即 resolve，state.busy 只存在一个微任务。方块坐标照常写，
-        // .tile 的 CSS transition 仍会滑过去，视觉不打折、输入零等待。
-        animate: !(moveOpts && moveOpts.touch)
+        // 触屏先结算以便连续滑动，渲染器继续播放位移、合成和新块入场。
+        immediate: touch
       })
       .then(function (completed) {
         if (state.session !== session) return;   // 已经换局或撤销，这一手作废
@@ -2327,6 +2335,7 @@
         }
         finishTurn();
       });
+    scheduleMergeFx(result.merges, combo, session, renderer.getSlideDuration(touch));
 
     return true;
   }
@@ -2467,21 +2476,7 @@
         true
       );
     } else {
-      setStatus(
-        '得分 ' + state.score + ' · 最大 ' + G.maxValue(state.board) + ' · 已走 ' + state.moves + ' 步',
-        true
-      );
-    }
-
-    // 连击状态压在日常状态后面：慢下来（>= 1200ms 空档）就该消失。
-    // 双人下状态行的第一诉求是「该谁走」，所以不让连击把它盖掉。
-    expireCombo();
-    if (!isDuel() && state.combo >= COMBO_FX_AT) {
-      setStatus(
-        '连击 ×' + state.combo + ' · 得分 ' + state.score +
-        ' · 最大 ' + G.maxValue(state.board),
-        true
-      );
+      setStatus('已走 ' + state.moves + ' 步', true);
     }
 
     // 这一步刚好收尾，把动画期间缓冲的方向兑现掉；兑现成功就不再排托管
@@ -2501,8 +2496,8 @@
     if (!obstacle) return;   // 没有空格，这一步就不长了
 
     state.obstaclesAdded += 1;
-    // 整盘重绘：新障碍走 is-new 淡入，老障碍静默摆回原位
-    renderer.renderBoard(state.board, { instant: true });
+    // 障碍单独入场，保留正在滑动及渐显的方块。
+    renderer.addObstacle(obstacle);
     Audio.move();
   }
 
@@ -2511,6 +2506,7 @@
   function undo() {
     if (!state.history.length) return;
 
+    cancelGesture();
     var snapshot = state.history.pop();
 
     disableAutoplay();
@@ -2549,7 +2545,7 @@
     else renderTimer();
 
     saveState();
-    setStatus('已撤销一步 · 得分 ' + state.score);
+    setStatus('已撤销一步 · 已走 ' + state.moves + ' 步');
   }
 
   /* ---------- 提示 ---------- */
@@ -3127,17 +3123,11 @@
     return event.pointerType === 'touch' || event.pointerType === 'pen' || isTouchLayout();
   }
 
-  function clearDragPreview() {
-    if (!els.tiles) return;
-    els.tiles.classList.remove('is-dragging');
-    els.tiles.style.removeProperty('transform');
-  }
-
   /** 先清起点再释放捕获，避免 lostpointercapture 重入或稍后的松手落子。 */
-  function cancelGesture() {
+  function cancelGesture(keepPreview) {
     var active = pointerStart;
     pointerStart = null;
-    clearDragPreview();
+    if (keepPreview !== true) renderer.clearPreview();
     if (active && els.board.releasePointerCapture && els.board.hasPointerCapture) {
       try {
         if (els.board.hasPointerCapture(active.id)) els.board.releasePointerCapture(active.id);
@@ -3152,14 +3142,14 @@
   function onPointerDown(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (pointerStart || isLocked() || state.over) return;
-    clearDragPreview();
     pointerStart = {
       x: event.clientX,
       y: event.clientY,
       id: event.pointerId,
       preview: wantsDragPreview(event),
       axis: null,
-      boardSize: els.board ? els.board.clientWidth : 0
+      direction: null,
+      slides: null
     };
 
     // 手指很容易滑出棋盘边界；不捕获指针的话 pointerup 就落在别处，
@@ -3174,10 +3164,7 @@
   }
 
   /**
-   * 跟手预览：手指一动，整层方块就沿着主轴平移，不等抬手。
-   * 主轴在第一次越过 DRAG_LOCK_PX 时锁定，后面手指轻微抖动不会改方向；
-   * 位移带阻尼与上限，避免整块棋盘被拖出边界。
-   * 这里只做视觉位移，一步棋仍然只在抬手时落（玩法与交互不变）。
+   * 只预览该方向能走的方块，位移不越过实际落点。主轴锁定后仍允许反向。
    */
   function onPointerMove(event) {
     if (!isActivePointer(event) || !pointerStart.preview) return;
@@ -3193,14 +3180,15 @@
     }
 
     var delta = pointerStart.axis === 'x' ? dx : dy;
-    var maxOffset = Math.max(1, pointerStart.boardSize * DRAG_MAX_RATIO);
-    var offset = Math.max(-maxOffset, Math.min(maxOffset, delta * DRAG_FOLLOW));
-    var ox = pointerStart.axis === 'x' ? offset : 0;
-    var oy = pointerStart.axis === 'y' ? offset : 0;
-
-    els.tiles.classList.add('is-dragging');
-    els.tiles.style.transform =
-      'translate3d(' + ox.toFixed(1) + 'px,' + oy.toFixed(1) + 'px,0)';
+    var dir = pointerStart.axis === 'x'
+      ? (delta > 0 ? 'right' : 'left')
+      : (delta > 0 ? 'down' : 'up');
+    if (dir !== pointerStart.direction) {
+      renderer.clearPreview();
+      pointerStart.direction = dir;
+      pointerStart.slides = G.previewSlides(state.board, dir);
+    }
+    renderer.previewMove(pointerStart.slides, dir, Math.abs(delta));
   }
 
   function onPointerCancel(event) {
@@ -3214,21 +3202,22 @@
     var dy = event.clientY - pointerStart.y;
     var axis = pointerStart.axis;
     var preview = pointerStart.preview;
-    cancelGesture();
-
     var threshold = preview ? SWIPE_THRESHOLD_TOUCH : SWIPE_THRESHOLD;
     var reached = axis
       ? Math.abs(axis === 'x' ? dx : dy) >= threshold
       : Math.max(Math.abs(dx), Math.abs(dy)) >= threshold;
-    if (!reached) return;
+    if (!reached) {
+      cancelGesture();
+      return;
+    }
 
     // 锁定主轴，不锁定正负方向：反向拖动与预览保持一致。
     var horizontal = axis ? axis === 'x' : Math.abs(dx) > Math.abs(dy);
     var dir = horizontal ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
 
-    // 触摸这一手走零等待路径：逻辑立刻结算，不等 285ms 动画；
-    // 键盘与托管仍走原路径，busy / pendingDir 的语义保持不变。
-    queueMove(dir, preview ? { touch: true } : null);
+    var keepPreview = preview && dir === pointerStart.direction;
+    cancelGesture(keepPreview);
+    if (!queueMove(dir, preview ? { touch: true } : null) && keepPreview) renderer.clearPreview();
   }
 
   /* ---------- 绑定 ---------- */
@@ -3359,6 +3348,7 @@
       if (playable && timeLeft) {
         restored = true;
         state.score = saved.score;
+        recordThreshold = Math.max(stats.bestScore, state.score);
         state.won = saved.won;
         state.keepPlaying = saved.keepPlaying;
         state.remainingMs = saved.remainingMs;

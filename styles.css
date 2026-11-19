@@ -237,6 +237,10 @@ body {
   color: var(--ink-faint);
 }
 
+.hud-label.is-record {
+  color: #86451f;
+}
+
 .hud-value {
   max-width: 100%;
   font-size: clamp(13px, 3.6vw, 17.5px);
@@ -772,7 +776,7 @@ body {
 }
 
 /*
- * 跟手预览会把整层方块 translate3d 拖出棋盘，必须在格子区边界上裁掉。
+ * 棋盘外的方块绘制仍裁在格子区，避免扫光与弹跳切进木框。
  * 裁在 .board 上会连木框一起裁（木框内侧会露出被切的色块），
  * 裁在 .grid-layer 上又会让方块盖不住网格，所以单独一层。
  * 这一层只做裁剪，不参与定位：inset 取 --pad，.tile-layer 用负 inset 抵消回去。
@@ -791,16 +795,20 @@ body {
   inset: calc(var(--pad) * -1);
   /* 压在方向提示的洗光之上，否则提示时数字会被一起洗白 */
   z-index: 1;
-  /*
-   * 手指拖动时整层做 translate3d 跟手，提前升到合成层，避免每次
-   * pointermove 都触发布局/重绘。is-dragging 由控制器加，抬手即摘。
-   */
-  will-change: transform;
 }
 
-.tile-layer.is-dragging {
-  /* 跟手必须零缓动：任何 transition 都会让方块慢半拍 */
+.tile-layer.is-dragging .tile {
+  /* 开始下一次拖动时，用当前棋盘坐标而不是上一步尚未走完的动画坐标。 */
   transition: none;
+}
+
+.tile-layer.is-touch-move {
+  --tile-slide-curve: cubic-bezier(0.16, 1, 0.3, 1);
+  --tile-appear-duration: 90ms;
+  --tile-appear-scale: 0.68;
+  --tile-merge-duration: 105ms;
+  --tile-merge-curve: ease-out;
+  --tile-merge-scale: 1.07;
 }
 
 /* ---------- 障碍 ---------- */
@@ -867,8 +875,9 @@ body {
     calc(var(--x, 0) * (var(--cell) + var(--gap))),
     calc(var(--y, 0) * (var(--cell) + var(--gap)))
   );
-  /* 必须与 renderer.js 的 SLIDE_MS 一致 */
-  transition: transform 110ms ease-in-out;
+  transition:
+    transform var(--tile-slide-duration, 110ms) var(--tile-slide-curve, ease-out),
+    translate var(--tile-slide-duration, 110ms) var(--tile-slide-curve, ease-out);
   will-change: transform;
 }
 
@@ -880,7 +889,7 @@ body {
   padding: 0 3px;
   border-radius: var(--radius);
   background: var(--tile-bg, #eee4da);
-  color: var(--tile-fg, #776e65);
+  color: var(--tile-fg, #432820);
   /* 字号按格子边长推导：三档尺寸、任意窗口宽度都等比收缩 */
   font-size: calc(var(--cell) * 0.45);
   font-weight: 800;
@@ -923,47 +932,38 @@ body {
 
 .tile__inner[data-value="8"] {
   --tile-bg: #f2b179;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="16"] {
   --tile-bg: #f59563;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="32"] {
   --tile-bg: #f67c5f;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="64"] {
   --tile-bg: #f65e3b;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="128"] {
   --tile-bg: #edcf72;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="256"] {
   --tile-bg: #edcc61;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="512"] {
   --tile-bg: #edc850;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="1024"] {
   --tile-bg: #edc53f;
-  --tile-fg: #fdf9f2;
 }
 
 .tile__inner[data-value="2048"] {
   --tile-bg: #edc22e;
-  --tile-fg: #fdf9f2;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.4),
     inset 0 -2px 0 rgba(0, 0, 0, 0.06),
@@ -998,20 +998,21 @@ body {
   }
 }
 
-/* 新方块弹出 */
+/* 沿用 gabrielecirulli/2048（MIT）的新块渐显与缩放时序。 */
 .tile__inner.anim-appear {
-  animation: tile-appear 150ms ease-out both;
+  animation: tile-appear var(--tile-appear-duration, 200ms) ease both;
 }
 
 /* 合成块：滑动结束后才出现，先缩小淡入再回弹到原尺寸（175ms 与 renderer 一致） */
 .tile__inner.anim-merge {
-  animation: tile-merge 175ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+  animation: tile-merge var(--tile-merge-duration, 175ms)
+    var(--tile-merge-curve, cubic-bezier(0.34, 1.4, 0.64, 1)) both;
 }
 
 @keyframes tile-appear {
   0% {
     opacity: 0;
-    transform: scale(0.3);
+    transform: scale(var(--tile-appear-scale, 0));
   }
   100% {
     opacity: 1;
@@ -1026,7 +1027,7 @@ body {
   }
   55% {
     opacity: 1;
-    transform: scale(1.13);
+    transform: scale(var(--tile-merge-scale, 1.13));
   }
   100% {
     opacity: 1;
@@ -1598,8 +1599,15 @@ body.is-sheet-open {
   min-height: 15px;
   font-size: 11px;
   line-height: 1.4;
-  color: var(--ink-faint);
+  color: var(--ink);
   text-align: center;
+}
+
+.combo-status {
+  margin-left: 8px;
+  color: #86451f;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* ---------- 全屏粒子层与震屏 ---------- */

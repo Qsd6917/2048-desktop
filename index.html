@@ -46,7 +46,7 @@
         <span class="hud-gain" id="p2Gain" aria-hidden="true"></span>
       </div>
       <div class="hud-item" id="bestBox">
-        <span class="hud-label">最高</span>
+        <span class="hud-label" id="bestLabel" aria-live="polite">最高</span>
         <span class="hud-value" id="best">0</span>
       </div>
       <div class="hud-item">
@@ -122,10 +122,10 @@
       </div>
     </div>
 
-    <!-- 状态行只负责可视文本；要播报的那一条写进下面的 .sr-only live region。
-         每步的得分 / 步数不进 live region，否则撤销 / 托管 / 连击的反馈会被顶掉 -->
+    <!-- 每步的步数与连击只显示在视觉状态行，撤销等操作另行播报。 -->
     <footer class="footer">
       <span id="status">用方向键开始</span>
+      <span class="combo-status" id="comboStatus" hidden></span>
       <span class="sr-only" id="statusAnnounce" role="status" aria-live="polite"></span>
     </footer>
   </main>
